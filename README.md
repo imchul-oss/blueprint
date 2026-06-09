@@ -309,11 +309,13 @@ Left-side AI panel takes natural-language commands:
 | `⌘⇧L` | Light ↔ dark toggle · 라이트/다크 |
 | `⌘O` | Outline panel · 아웃라인 |
 | `⌘Z` / `⌘Y` | undo / redo |
+| `⌘G` | Group selected nodes into a frame (≥2 selected) · 선택 노드 그룹화 |
 | `Delete` | Delete selected node/edge (confirm gate) · 삭제 |
 | `Alt + drag` | Duplicate node · 노드 복제 |
 | `Shift + drag (empty canvas)` | Lasso multi-select · 라소 선택 |
 | `Space + drag` | Pan canvas · 캔버스 pan |
-| Right-click node | Context menu (delete · duplicate · center · inspector · new node) |
+| Right-click node | Context menu (delete · duplicate · center · inspector · new node) · 우클릭 메뉴 |
+| Right-click multi-selection | Group into frame · 그룹으로 묶기 |
 | Node 4-way `+` | ↑ parent / ↓ child / → next depends / ← supporting evidence |
 
 ---
