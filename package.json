@@ -1,0 +1,51 @@
+{
+  "name": "ubp",
+  "version": "0.3.0",
+  "description": "Universal Blueprint Platform — blueprint-first authoring with bidirectional MCP sync + SaaS HTTP API",
+  "type": "module",
+  "scripts": {
+    "build": "node node_modules/typescript/bin/tsc",
+    "demo": "node dist/demo.js",
+    "demo:tsx": "tsx src/demo.ts",
+    "smoke": "node smoke.mjs",
+    "test": "vitest run",
+    "test:mcp": "npm run build && node dist/test-mcp-logic.js",
+    "test:mcp:e2e": "npm run build && node dist/test-mcp-e2e.js",
+    "test:mcp:all": "npm run build && node dist/test-mcp-logic.js && node dist/test-mcp-e2e.js",
+    "mcp": "node dist/mcp-server.js",
+    "build:server": "node node_modules/typescript/bin/tsc -p tsconfig.server.json",
+    "server": "node dist/server/index.js",
+    "server:dev": "tsx src/server/index.ts",
+    "repair": "npm rebuild esbuild rollup better-sqlite3 && npm i --no-save",
+    "clean": "rimraf dist .blueprint/snapshots"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.6",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  },
+  "optionalDependencies": {
+    "@esbuild/win32-x64": "*",
+    "@esbuild/darwin-x64": "*",
+    "@esbuild/darwin-arm64": "*",
+    "@esbuild/linux-x64": "*",
+    "@rollup/rollup-win32-x64-msvc": "*",
+    "@rollup/rollup-darwin-x64": "*",
+    "@rollup/rollup-darwin-arm64": "*",
+    "@rollup/rollup-linux-x64-gnu": "*",
+    "@supabase/supabase-js": "^2.45.0",
+    "@libsql/client": "^0.14.0",
+    "postgres": "^3.4.0"
+  }
+}

@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>UBP — Compliance Dashboard</title>
+<style>
+  /* ===== AIM Color System — Paper surface (default) ===== */
+  :root {
+    --bg: #FFFFFF; --bg-elev: #F0F0F0;
+    --panel-border: #DEDEDE; --line: #F0F0F0;
+    --ink: #4F4F4F; --ink-2: #717171; --muted: #A8A8A8;
+    --accent: #3ABF94; --accent-fg: #2F2F2F;
+    --status-confirmed: #3EAC88; --status-draft: #FF8770;
+    --status-deferred: #C6553E; --warn: #FF8770;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  /* OS 자동 다크 차단 — UBP 디폴트 라이트 고정. 다크는 data-theme="dark" 시만. */
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #4F4F4F; --bg-elev: #2F2F2F;
+    --panel-border: #717171; --line: #4F4F4F;
+    --ink: #FFFFFF; --ink-2: rgba(255,255,255,0.72); --muted: #A8A8A8;
+    --accent: #4DD2A7; --accent-fg: #2F2F2F;
+    --status-confirmed: #4DD2A7; --status-draft: #FF8770;
+    --status-deferred: #FF6749; --warn: #FF8770;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--font); }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--panel-border); display:flex; justify-content:space-between; align-items:center; background: var(--bg-elev); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .controls { display:flex; gap:8px; align-items:center; }
+  input, select { background: var(--bg-elev); border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 10px; color: var(--ink); font-family: inherit; font-size: 13px; }
+  button { background: var(--accent); color: var(--accent-fg); border: none; border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--panel-border); }
+
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .kpi { background: var(--bg-elev); border: 1px solid var(--panel-border); border-radius: 12px; padding: 16px; }
+  .kpi .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; margin-bottom: 4px; }
+  .kpi .value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+  .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .kpi .target { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .kpi.ok .value { color: var(--status-confirmed); }
+  .kpi.warn .value { color: var(--warn); }
+  .kpi.bad .value { color: var(--status-deferred); }
+
+  section.chart-card { background: var(--bg-elev); border: 1px solid var(--panel-border); border-radius: 12px; padding: 20px; grid-column: span 2; }
+  section.chart-card h2 { font-size: 14px; margin: 0 0 12px; font-weight: 600; }
+  section.chart-card .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  section.chart-card .legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+  section.wide { grid-column: span 4; }
+  section.full-width { grid-column: span 4; }
+
+  table.actor-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.actor-table th, table.actor-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+  table.actor-table th { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  table.actor-table .num { text-align: right; font-family: var(--mono); }
+
+  pre { font-family: var(--mono); font-size: 12px; max-height: 200px; overflow-y: auto; background: var(--bg); padding: 12px; border-radius: 8px; margin: 0; }
+  .empty { color: var(--muted); text-align: center; padding: 40px; font-size: 13px; }
+  .err { color: var(--status-deferred); }
+
+  svg.chart line.axis { stroke: var(--line); stroke-width: 1; }
+  svg.chart text { font-family: var(--font); font-size: 10px; fill: var(--muted); }
+  svg.chart path.series { fill: none; stroke-width: 2; }
+  svg.chart .target-line { stroke: var(--muted); stroke-dasharray: 3 3; stroke-width: 1; }
+
+  .nav { display: flex; gap: 4px; }
+  .nav a { padding: 6px 10px; border-radius: 6px; text-decoration: none; color: var(--muted); font-size: 13px; }
+  .nav a:hover, .nav a.active { background: var(--line); color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;gap:16px;align-items:center;">
+    <h1>📊 UBP Compliance</h1>
+    <div class="nav">
+      <a href="whiteboard.html">Whiteboard</a>
+      <a href="dashboard.html" class="active">Dashboard</a>
+      <a href="plan.html">Plan</a>
+    </div>
+  </div>
+  <div class="controls">
+    <label>API:</label>
+    <input id="f-api" placeholder="http://localhost:4173" style="width:240px;">
+    <label>WS:</label>
+    <input id="f-ws" placeholder="ws_xxxxxxxx" style="width:140px;">
+    <label>Token:</label>
+    <input id="f-token" placeholder="JWT" style="width:140px;" type="password">
+    <button onclick="loadAll()">조회</button>
+    <button class="ghost" onclick="autoRefreshToggle()" id="auto-btn">자동 ▶</button>
+  </div>
+</header>
+
+<main id="main">
+  <div class="kpi" id="kpi-match"><div class="label">정합률</div><div class="value">—</div><div class="sub" id="kpi-match-sub"></div><div class="target">목표 ≥ 90%</div></div>
+  <div class="kpi" id="kpi-manual"><div class="label">수동보정율</div><div class="value">—</div><div class="sub" id="kpi-manual-sub"></div><div class="target">목표 &lt; 20%</div></div>
+  <div class="kpi" id="kpi-conf"><div class="label">총 confirm</div><div class="value">—</div><div class="sub" id="kpi-conf-sub"></div></div>
+  <div class="kpi" id="kpi-conflict"><div class="label">현재 충돌</div><div class="value">—</div><div class="sub">대기 propose 간 anchor 충돌</div></div>
+
+  <section class="chart-card">
+    <h2>이벤트 시계열 (최근 1h, 1분 bucket)</h2>
+    <div class="legend">
+      <span><span class="swatch" style="background:var(--accent)"></span>propose</span>
+      <span><span class="swatch" style="background:var(--status-confirmed)"></span>confirm</span>
+      <span><span class="swatch" style="background:var(--status-deferred)"></span>reject</span>
+    </div>
+    <svg class="chart" id="chart-events" viewBox="0 0 600 200" preserveAspectRatio="none" style="width:100%;height:200px;"></svg>
+  </section>
+
+  <section class="chart-card">
+    <h2>정합률 / 수동보정율 추이</h2>
+    <div class="legend">
+      <span><span class="swatch" style="background:var(--status-confirmed)"></span>matchRate (%)</span>
+      <span><span class="swatch" style="background:var(--warn)"></span>manualPatch (%)</span>
+    </div>
+    <svg class="chart" id="chart-rates" viewBox="0 0 600 200" preserveAspectRatio="none" style="width:100%;height:200px;"></svg>
+  </section>
+
+  <section class="chart-card full-width">
+    <h2>액터 활동 Top 10</h2>
+    <table class="actor-table" id="actor-table"><tbody></tbody></table>
+  </section>
+
+  <section class="chart-card full-width">
+    <h2>최근 audit (50)</h2>
+    <pre id="audit-log">로딩…</pre>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+// localStorage 복원
+const LS = {
+  get(k, d) { return localStorage.getItem("ubp.dash." + k) || d; },
+  set(k, v) { localStorage.setItem("ubp.dash." + k, v || ""); }
+};
+$("f-api").value = params.get("api") || LS.get("api", "http://localhost:4173");
+$("f-ws").value  = params.get("ws")  || LS.get("ws", "");
+$("f-token").value = params.get("token") || LS.get("token", "");
+
+let autoTimer = null;
+function autoRefreshToggle() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; $("auto-btn").textContent = "자동 ▶"; }
+  else { autoTimer = setInterval(loadAll, 30000); $("auto-btn").textContent = "자동 ❚❚"; }
+}
+
+async function api(path) {
+  const base = $("f-api").value.trim();
+  const token = $("f-token").value.trim();
+  const r = await fetch(base + path, { headers: token ? { authorization: "Bearer " + token } : {} });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+async function loadAll() {
+  LS.set("api", $("f-api").value);
+  LS.set("ws",  $("f-ws").value);
+  LS.set("token", $("f-token").value);
+  const ws = $("f-ws").value.trim();
+  if (!ws) { $("audit-log").textContent = "WS ID 가 비었습니다."; return; }
+  try {
+    const [comp, conflicts, audit] = await Promise.all([
+      api("/workspaces/" + ws + "/compliance"),
+      api("/workspaces/" + ws + "/conflicts"),
+      api("/workspaces/" + ws + "/audit?n=500"),
+    ]);
+    renderKpi(comp, conflicts);
+    renderEventsChart(audit);
+    renderRatesChart(audit);
+    renderActors(audit);
+    renderAuditLog(audit);
+  } catch (e) {
+    $("audit-log").innerHTML = '<span class="err">에러: ' + esc(e.message) + '</span>';
+  }
+}
+
+function pct(x) { return Number.isNaN(x) ? "—" : (x * 100).toFixed(1) + "%"; }
+
+function renderKpi(comp, conflicts) {
+  const m = comp.matchRate;
+  const mc = $("kpi-match");
+  $("kpi-match").querySelector(".value").textContent = pct(m);
+  $("kpi-match-sub").textContent = comp.anchorMatchedOps + " / " + comp.anchorCountableOps + " ops";
+  mc.classList.remove("ok","warn","bad");
+  if (Number.isNaN(m)) {} else if (m >= 0.90) mc.classList.add("ok");
+  else if (m >= 0.75) mc.classList.add("warn");
+  else mc.classList.add("bad");
+
+  const mp = comp.manualPatchRate;
+  const mpc = $("kpi-manual");
+  $("kpi-manual").querySelector(".value").textContent = pct(mp);
+  $("kpi-manual-sub").textContent = comp.followUpPatchedConfirms + " / " + comp.totalConfirms + " (윈도우 " + Math.round(comp.windowMs/60000) + "분)";
+  mpc.classList.remove("ok","warn","bad");
+  if (mp < 0.20) mpc.classList.add("ok");
+  else if (mp < 0.35) mpc.classList.add("warn");
+  else mpc.classList.add("bad");
+
+  $("kpi-conf").querySelector(".value").textContent = comp.totalConfirms;
+  $("kpi-conf-sub").textContent = "propose " + comp.totalProposes + " · reject " + comp.totalRejects;
+
+  const cc = $("kpi-conflict");
+  cc.querySelector(".value").textContent = conflicts.count;
+  cc.classList.remove("ok","warn","bad");
+  if (conflicts.count === 0) cc.classList.add("ok");
+  else if (conflicts.count <= 2) cc.classList.add("warn");
+  else cc.classList.add("bad");
+}
+
+function bucketByMinute(audit, span = 60) {
+  // 60분 동안의 분 단위 bucket. 키 = 0..span-1 (지금 기준 분 전)
+  const now = Date.now();
+  const start = now - span * 60_000;
+  const buckets = { propose: new Array(span).fill(0), confirm: new Array(span).fill(0), reject: new Array(span).fill(0) };
+  for (const e of audit) {
+    if (e.ts < start || e.ts > now) continue;
+    const idx = Math.min(span - 1, Math.floor((e.ts - start) / 60_000));
+    if (e.kind === "propose") buckets.propose[idx]++;
+    else if (e.kind === "confirm") buckets.confirm[idx]++;
+    else if (e.kind === "reject") buckets.reject[idx]++;
+  }
+  return buckets;
+}
+
+function renderEventsChart(audit) {
+  const span = 60;
+  const buckets = bucketByMinute(audit, span);
+  const W = 600, H = 200, PAD = 20;
+  const max = Math.max(1, ...buckets.propose, ...buckets.confirm, ...buckets.reject);
+  const xs = (i) => PAD + (i / (span - 1)) * (W - PAD * 2);
+  const ys = (v) => H - PAD - (v / max) * (H - PAD * 2);
+  function path(arr) {
+    return arr.map((v, i) => (i === 0 ? "M" : "L") + xs(i).toFixed(1) + "," + ys(v).toFixed(1)).join(" ");
+  }
+  const svg = $("chart-events");
+  svg.innerHTML = `
+    <line class="axis" x1="${PAD}" y1="${H-PAD}" x2="${W-PAD}" y2="${H-PAD}"/>
+    <line class="axis" x1="${PAD}" y1="${PAD}" x2="${PAD}" y2="${H-PAD}"/>
+    <text x="${W-PAD}" y="${H-4}" text-anchor="end">지금</text>
+    <text x="${PAD}" y="${H-4}">-60분</text>
+    <text x="4" y="${PAD+4}">${max}</text>
+    <path class="series" d="${path(buckets.propose)}" stroke="var(--accent)"/>
+    <path class="series" d="${path(buckets.confirm)}" stroke="var(--status-confirmed)"/>
+    <path class="series" d="${path(buckets.reject)}" stroke="var(--status-deferred)"/>
+  `;
+}
+
+function renderRatesChart(audit) {
+  // 시계열 정합률·수동보정율: 최근 1시간을 10분 윈도우로 나눠 각 윈도우에서 compute
+  const W = 600, H = 200, PAD = 24;
+  const now = Date.now();
+  const windows = [];
+  for (let i = 5; i >= 0; i--) {
+    const end = now - i * 10 * 60_000;
+    const start = end - 60 * 60_000;
+    windows.push({ start, end, label: i === 0 ? "지금" : `-${i*10}m` });
+  }
+  function computeWindow(slice) {
+    let conf = 0, anchorMatched = 0, anchorCountable = 0;
+    const known = new Set();
+    const confirms = slice.filter(e => e.kind === "confirm").sort((a,b)=>a.ts-b.ts);
+    let followUp = 0;
+    const lastOnNode = new Map();
+    for (const e of confirms) {
+      conf++;
+      if (!e.ops) continue;
+      const touched = new Set();
+      let counted = false;
+      for (const op of e.ops) {
+        if (op.op === "add_node") known.add(op.node.id);
+        else if (op.op === "remove_node") known.delete(op.id);
+        if (op.op !== "add_node") {
+          anchorCountable++;
+          const id = op.id || (op.edge && op.edge.from);
+          if (op.op === "update_node") { if (known.has(op.id)) anchorMatched++; touched.add(op.id); }
+          else if (op.op === "remove_node") { if (known.has(op.id)) anchorMatched++; touched.add(op.id); }
+          else if (op.op === "add_edge" || op.op === "remove_edge") {
+            if (known.has(op.edge.from) && known.has(op.edge.to)) anchorMatched++;
+            touched.add(op.edge.from);
+          }
+        }
+      }
+      for (const id of touched) {
+        const prev = lastOnNode.get(id);
+        if (prev != null && e.ts - prev <= 5 * 60_000) {
+          const hasPatch = e.ops.some(op => op.op === "update_node" && op.id === id);
+          if (hasPatch && !counted) { followUp++; counted = true; }
+        }
+        lastOnNode.set(id, e.ts);
+      }
+    }
+    return {
+      matchRate: anchorCountable === 0 ? NaN : anchorMatched / anchorCountable,
+      manualPatchRate: conf === 0 ? 0 : followUp / conf,
+    };
+  }
+  const series = windows.map(w => {
+    const slice = audit.filter(e => e.ts >= w.start && e.ts <= w.end);
+    return { ...w, ...computeWindow(slice) };
+  });
+  const xs = (i) => PAD + (i / (series.length - 1)) * (W - PAD * 2);
+  const ys = (v) => H - PAD - (Number.isFinite(v) ? v : 0) * (H - PAD * 2);
+  function path(getter) {
+    return series.map((s, i) => {
+      const v = getter(s);
+      return (i === 0 ? "M" : "L") + xs(i).toFixed(1) + "," + ys(v).toFixed(1);
+    }).join(" ");
+  }
+  const svg = $("chart-rates");
+  svg.innerHTML = `
+    <line class="axis" x1="${PAD}" y1="${H-PAD}" x2="${W-PAD}" y2="${H-PAD}"/>
+    <line class="axis" x1="${PAD}" y1="${PAD}" x2="${PAD}" y2="${H-PAD}"/>
+    <line class="target-line" x1="${PAD}" y1="${ys(0.9)}" x2="${W-PAD}" y2="${ys(0.9)}"/>
+    <text x="${W-PAD+2}" y="${ys(0.9)+3}">90%</text>
+    <line class="target-line" x1="${PAD}" y1="${ys(0.2)}" x2="${W-PAD}" y2="${ys(0.2)}"/>
+    <text x="${W-PAD+2}" y="${ys(0.2)+3}">20%</text>
+    <path class="series" d="${path(s => s.matchRate)}" stroke="var(--status-confirmed)"/>
+    <path class="series" d="${path(s => s.manualPatchRate)}" stroke="var(--warn)"/>
+    ${series.map((s, i) => `<text x="${xs(i)}" y="${H-6}" text-anchor="middle">${s.label}</text>`).join("")}
+  `;
+}
+
+function renderActors(audit) {
+  const tally = {};
+  for (const e of audit) {
+    const a = e.actor || "unknown";
+    if (!tally[a]) tally[a] = { propose: 0, confirm: 0, reject: 0 };
+    if (tally[a][e.kind] !== undefined) tally[a][e.kind]++;
+  }
+  const rows = Object.entries(tally)
+    .map(([actor, t]) => ({ actor, ...t, total: t.propose + t.confirm + t.reject }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10);
+  const tbody = $("actor-table").querySelector("tbody");
+  if (rows.length === 0) { tbody.innerHTML = `<tr><td class="empty" colspan="5">데이터 없음</td></tr>`; return; }
+  tbody.innerHTML = `
+    <tr><th>Actor</th><th class="num">propose</th><th class="num">confirm</th><th class="num">reject</th><th class="num">total</th></tr>
+  ` + rows.map(r => `
+    <tr>
+      <td>${esc(r.actor)}</td>
+      <td class="num">${r.propose}</td>
+      <td class="num">${r.confirm}</td>
+      <td class="num">${r.reject}</td>
+      <td class="num"><b>${r.total}</b></td>
+    </tr>
+  `).join("");
+}
+
+function renderAuditLog(audit) {
+  if (audit.length === 0) { $("audit-log").innerHTML = '<span class="empty">audit 비어있음</span>'; return; }
+  $("audit-log").textContent = audit.slice(-50).reverse().map(e => {
+    const ts = new Date(e.ts).toLocaleString();
+    return `${ts}  ${e.kind.padEnd(8)} ${e.actor||""}  ${e.intent||e.note||""}`;
+  }).join("\n");
+}
+
+function esc(s) { return String(s||"").replace(/[&<>'"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;" })[c]); }
+
+if ($("f-ws").value) loadAll();
+</script>
+</body>
+</html>

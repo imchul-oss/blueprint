@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>UBP — 마스터 플랜 진척도</title>
+<style>
+  /* ===== AIM Color System — Paper surface (default) ===== */
+  :root {
+    --bg: #FFFFFF; --bg-elev: #F0F0F0; --ink: #4F4F4F; --ink-2: #717171;
+    --muted: #A8A8A8; --accent: #3ABF94; --accent-fg: #2F2F2F; --line: #F0F0F0;
+    --panel-border: #DEDEDE;
+    --ok: #3EAC88; --warn: #FF8770; --bad: #C6553E;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  }
+  /* OS 자동 다크 차단 — 다크는 data-theme="dark" 토글 시만. */
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #4F4F4F; --bg-elev: #2F2F2F; --ink: #FFFFFF; --ink-2: rgba(255,255,255,0.72);
+    --muted: #A8A8A8; --accent: #4DD2A7; --accent-fg: #2F2F2F;
+    --line: #4F4F4F; --panel-border: #717171;
+    --ok: #4DD2A7; --warn: #FF8770; --bad: #FF6749;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--font); }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--panel-border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-elev); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .nav a { padding: 6px 10px; border-radius: 6px; text-decoration: none; color: var(--muted); font-size: 13px; }
+  .nav a:hover, .nav a.active { background: var(--line); color: var(--ink); }
+  main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .kpi { background: var(--bg-elev); border: 1px solid var(--panel-border); border-radius: 12px; padding: 16px; }
+  .kpi .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+  .kpi .value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-top: 4px; }
+  .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  .pillar { background: var(--bg-elev); border: 1px solid var(--panel-border); border-radius: 12px; padding: 16px 20px; margin-bottom: 14px; }
+  .pillar-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .pillar-head h2 { font-size: 15px; margin: 0; font-weight: 700; }
+  .pillar-head .pill { font-size: 11px; padding: 2px 8px; border-radius: 4px; }
+  .pillar-head .pill.done { background: rgba(52,199,89,0.15); color: var(--ok); }
+  .pillar-head .pill.progress { background: rgba(255,149,0,0.15); color: var(--warn); }
+  .pillar-head .pill.later { background: var(--line); color: var(--muted); }
+
+  .bar { width: 100%; height: 8px; background: var(--line); border-radius: 4px; margin: 8px 0; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); transition: width 300ms; }
+  .bar-fill.done { background: var(--ok); }
+  .bar-fill.progress { background: var(--warn); }
+  .bar-fill.later { background: var(--muted); }
+
+  .items { font-size: 13px; line-height: 1.7; color: var(--ink-2); margin-top: 8px; }
+  .items .item { padding-left: 18px; position: relative; }
+  .items .item::before { content: ""; position: absolute; left: 0; top: 7px; width: 10px; height: 10px; border-radius: 50%; }
+  .items .item.done::before { background: var(--ok); }
+  .items .item.progress::before { background: var(--warn); animation: pulse 1.5s infinite; }
+  .items .item.later::before { background: var(--muted); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  .excluded { background: rgba(255,59,48,0.08); border-left: 3px solid var(--bad); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 24px 0; font-size: 13px; }
+  .excluded h3 { margin: 0 0 8px; font-size: 13px; color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;gap:16px;align-items:center;">
+    <h1>🗺 UBP 마스터 플랜</h1>
+    <div class="nav">
+      <a href="whiteboard.html">Whiteboard</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="plan.html" class="active">Plan</a>
+    </div>
+  </div>
+  <div style="font-size:12px;color:var(--muted)">8 Pillar · 골 도달 매트릭스</div>
+</header>
+
+<main>
+  <div class="summary">
+    <div class="kpi">
+      <div class="label">완성 Pillar</div>
+      <div class="value" id="kpi-done">6</div>
+      <div class="sub" id="kpi-done-sub">/ 8</div>
+    </div>
+    <div class="kpi">
+      <div class="label">진행 중</div>
+      <div class="value" style="color:var(--warn)" id="kpi-progress">1</div>
+      <div class="sub">확장 또는 마이너 작업</div>
+    </div>
+    <div class="kpi">
+      <div class="label">차후</div>
+      <div class="value" style="color:var(--muted)" id="kpi-later">1</div>
+      <div class="sub">P2 우선순위</div>
+    </div>
+    <div class="kpi">
+      <div class="label">영원 배제</div>
+      <div class="value" style="color:var(--bad)">4</div>
+      <div class="sub">본질 위배 — 의도적</div>
+    </div>
+  </div>
+
+  <div id="pillars"></div>
+
+  <div class="excluded">
+    <h3>영원 배제 (본질 위배 — 추가하지 않음)</h3>
+    <ul style="margin:0;padding-left:18px;">
+      <li>터치/모바일 별도 UX 트랙 (데스크톱 마우스/키보드 1급)</li>
+      <li>자유 그림판 (캔버스 전체 도형 자유배치) — sketch는 노드 부속만</li>
+      <li>이미지 생성 (GPT-4o 등) — 외부에서 가져온 이미지만 첨부</li>
+      <li>산출물 자체 렌더 (PPT 슬라이드 카드, Marp export 등) — 외부 도구 위임</li>
+    </ul>
+  </div>
+</main>
+
+<script>
+const PILLARS = [
+  {
+    id: "P1", title: "코어 그래프 GUI", status: "done", progress: 100,
+    items: [
+      { t: "카드·와이어·캔버스·줌/팬·미니맵", s: "done" },
+      { t: "Frame nesting + group-move", s: "done" },
+      { t: "lasso·Alt-drag·Ghost arrow·8pt snap·정렬 가이드", s: "done" },
+      { t: "Inspector 5탭 (기본/스펙/첨부/관계/이력)", s: "done" },
+      { t: "단축 ⌘K · ⌘F · ⌘O · ⌘, · ⌘⇧L", s: "done" },
+      { t: "50+ UI 토큰 광폭 조절 (settings) + 4 프리셋", s: "done" },
+      { t: "Apple HIG · 라이트/다크 · 8pt grid", s: "done" },
+    ],
+  },
+  {
+    id: "P2", title: "환각 통제 4축", status: "done", progress: 100,
+    items: [
+      { t: "필수 슬롯 (required-slots) + missing detection", s: "done" },
+      { t: "Confirm gate (propose → confirm 분리)", s: "done" },
+      { t: "Audit log (audit.jsonl)", s: "done" },
+      { t: "Snapshot + restore (50 보관)", s: "done" },
+      { t: "Optimistic rev lock + WAL persistence", s: "done" },
+    ],
+  },
+  {
+    id: "P3", title: "본질 5번 — 레퍼런스 첨부", status: "done", progress: 100,
+    items: [
+      { t: "Attachment 4종 (image/sketch/link/file)", s: "done" },
+      { t: "Sketch in-modal SVG drawing", s: "done" },
+      { t: "노드 카드 썸네일 + Inspector 첨부 탭", s: "done" },
+      { t: "저장 모드 5종 (inline/IndexedDB/local-fs/supabase/url)", s: "done" },
+      { t: "로컬 무제한 + 클라우드 200MB 가드", s: "done" },
+      { t: "lazy resolve (모든 ref → src 통일)", s: "done" },
+    ],
+  },
+  {
+    id: "P4", title: "모델 서빙 — 정책·하네스 채널", status: "done", progress: 100,
+    items: [
+      { t: "MCP 17 도구 (read/propose/confirm/audit/snapshot/policy/compliance/anchor/conflict/harness)", s: "done" },
+      { t: "BLUEPRINT.md 정책 + 핫리로드", s: "done" },
+      { t: "Outline export 3종 (.md / .canvas / llms.txt)", s: "done" },
+      { t: "get_harness — 정책+BP+자가점검 일괄 (모델 CLAUDE.md 등가)", s: "done" },
+      { t: "compliance_summary_for_llm — self-audit", s: "done" },
+      { t: "VS Code 확장 + SaaS REST + SSE realtime", s: "done" },
+      { t: "propose_from_prompt — 자연어 → ops", s: "done" },
+    ],
+  },
+  {
+    id: "P5", title: "호환·가져오기", status: "done", progress: 100,
+    items: [
+      { t: "JSON Canvas export + import (Obsidian 호환)", s: "done" },
+      { t: "Obsidian Bases properties 매핑 (frontmatter)", s: "done" },
+      { t: "Markdown → BP (extract.ts)", s: "done" },
+      { t: "Code anchor scan (브라우저 + MCP)", s: "done" },
+      { t: "anchor_to_propose — traces-to 자동", s: "done" },
+      { t: "JSON Canvas attachments round-trip 보존", s: "done" },
+    ],
+  },
+  {
+    id: "P6", title: "운영·백엔드", status: "progress", progress: 75,
+    items: [
+      { t: "FileSystem 백엔드 (.blueprint/) — 기본", s: "done" },
+      { t: "JWT 인증 + 권한 매트릭스 + SSE", s: "done" },
+      { t: "Storage 어댑터 인터페이스 (4 백엔드)", s: "done" },
+      { t: "Supabase SQL 스키마 + RLS + confirm_proposal 함수", s: "done" },
+      { t: "SupabaseStorage 동적 import + Realtime 브리지", s: "done" },
+      { t: "tailAudit·listSnapshots async (v2)", s: "done" },
+      { t: "Supabase Storage 직접 업로드 UI", s: "done" },
+      { t: "Postgres / Turso 어댑터 — 골격만 (TODO 채움 대기)", s: "progress" },
+    ],
+  },
+  {
+    id: "P7", title: "가시화·모니터링", status: "done", progress: 100,
+    items: [
+      { t: "Compliance 대시보드 (정합률·수동보정율 시계열)", s: "done" },
+      { t: "traces-to 엣지 시각 강조", s: "done" },
+      { t: "Conflict 검출 + 머지 모달 (단순/3-way)", s: "done" },
+      { t: "Anchor scan 캔버스 trigger", s: "done" },
+      { t: "마스터 플랜 진척도 (this)", s: "done" },
+    ],
+  },
+  {
+    id: "P8", title: "협업 (실시간 cursor·코멘트)", status: "later", progress: 0,
+    items: [
+      { t: "실시간 cursor (멀티유저)", s: "later" },
+      { t: "코멘트·@멘션", s: "later" },
+      { t: "사용자가 '차후'로 결정 — P2 우선순위", s: "later" },
+    ],
+  },
+];
+
+function render() {
+  let done = 0, progress = 0, later = 0;
+  for (const p of PILLARS) {
+    if (p.status === "done") done++;
+    else if (p.status === "progress") progress++;
+    else if (p.status === "later") later++;
+  }
+  document.getElementById("kpi-done").textContent = done;
+  document.getElementById("kpi-done-sub").textContent = `/ ${PILLARS.length}`;
+  document.getElementById("kpi-progress").textContent = progress;
+  document.getElementById("kpi-later").textContent = later;
+
+  document.getElementById("pillars").innerHTML = PILLARS.map(p => `
+    <div class="pillar">
+      <div class="pillar-head">
+        <h2>${p.id} · ${esc(p.title)}</h2>
+        <span class="pill ${p.status}">${labelOf(p.status)} · ${p.progress}%</span>
+      </div>
+      <div class="bar"><div class="bar-fill ${p.status}" style="width:${p.progress}%"></div></div>
+      <div class="items">
+        ${p.items.map(it => `<div class="item ${it.s}">${esc(it.t)}</div>`).join("")}
+      </div>
+    </div>
+  `).join("");
+}
+function labelOf(s) { return s === "done" ? "완성" : s === "progress" ? "진행 중" : "차후"; }
+function esc(s) { return String(s||"").replace(/[&<>'"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;" })[c]); }
+render();
+</script>
+</body>
+</html>

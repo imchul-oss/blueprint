@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# MCP local store + runtime state (live blueprint, audit log, snapshots)
+.blueprint/
+
+# SaaS server runtime data
+.ubp-data/
+state/
+
+# Logs / process output
+*.err
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
