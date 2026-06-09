@@ -1250,9 +1250,9 @@
     user-select: none;
     transition: border-color var(--dur) var(--ease);
   }
-  .frame:hover { border-style: solid; }
-  /* 선택된 frame — accent solid */
-  .frame.sel { border-style: solid; border-color: var(--accent); background: var(--accent-glow); }
+  .frame:hover { border-color: color-mix(in srgb, var(--frame-color, var(--panel-border)) 75%, transparent); }
+  /* 선택된 frame — accent 색만 강조, 점선 유지 */
+  .frame.sel { border-style: dashed; border-color: var(--accent); background: var(--accent-glow); }
   /* drop 후보 frame — warn 톤 dashed outline + 점멸 */
   .frame.hover-target {
     border-style: dashed !important;
@@ -1463,6 +1463,10 @@
         <div class="hint">아래 카드를 클릭해 블루프린트 골격을 즉시 생성합니다.</div>
       </div>
       <div class="templates">
+        <button class="template-card" onclick="startBlankBlueprint()" style="border-style:dashed;">
+          <h4>＋ 공백으로 시작</h4>
+          <p>빈 캔버스 — 루트 노드 1개에서 직접 쌓기</p>
+        </button>
         <button class="template-card" onclick="loadTemplate('saas')">
           <h4>SaaS 제품</h4>
           <p>product · goal · persona · metric · 4 features · 1 data-entity</p>
@@ -4269,6 +4273,8 @@ function openNodeContextMenu(x, y, nodeId) {
     m.innerHTML = `
       <button disabled style="opacity:.6;cursor:default;"><b>${N}개 노드 선택됨</b></button>
       <hr/>
+      <button onclick="closeContextMenu();groupSelected()"><b>${N}개 그룹으로 묶기</b><span class="kbd">⌘G</span></button>
+      <hr/>
       <button onclick="closeContextMenu();openConfirm('다중 삭제','${N}개 노드를 삭제할까요?', ()=>doMultiDelete())" class="danger">${N}개 삭제<span class="kbd">Del</span></button>
       <button onclick="closeContextMenu();duplicateMultiSelected()">${N}개 복제</button>
       <hr/>
@@ -4352,6 +4358,38 @@ function setStatusForMulti(newStatus) {
   bumpRev();
   render();
   toast(`${n}개 노드 → ${newStatus}`, "ok");
+}
+
+// 다중선택 → 자동 그룹 프레임 생성. 선택 노드 바운딩박스를 감싸는 section 노드를 만들고
+// applyFrameContainment 로 선택 노드들을 자식으로 재배선한다.
+function groupSelected() {
+  const ids = [..._multiSel].filter(id => id !== "n_root");
+  if (ids.length < 1) { toast("그룹화할 노드를 선택하세요", "error"); return; }
+  saveState("group");
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const id of ids) {
+    const p = pos[id]; if (!p) continue;
+    const el = document.querySelector(`.node[data-id="${id}"], .frame[data-frame-id="${id}"]`);
+    const w = el ? el.offsetWidth : 224, h = el ? el.offsetHeight : 110;
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x + w); maxY = Math.max(maxY, p.y + h);
+  }
+  if (!isFinite(minX)) { toast("위치 정보 없음", "error"); return; }
+  const PAD = 48, TITLE = 28;
+  const fid = `n_group_${Date.now() % 100000}`;
+  BP.nodes.push({
+    id: fid, role: "section", title: "그룹", status: "draft",
+    attrs: { frame: { width: Math.max(240, (maxX - minX) + PAD * 2), height: Math.max(160, (maxY - minY) + PAD * 2 + TITLE) } }
+  });
+  pos[fid] = { x: minX - PAD, y: minY - PAD - TITLE };
+  BP.edges.push({ from: fid, to: "n_root", type: "parent" });
+  applyFrameContainment(fid);
+  bumpRev();
+  audit("propose", { intent: `group ${ids.length} nodes`, actor: "user" });
+  _multiSel.clear();
+  render();
+  selectNode(fid);
+  toast(`${ids.length}개 그룹으로 묶음`, "ok");
 }
 
 function duplicateSelectedNode() {
@@ -4975,6 +5013,7 @@ const STENCIL_PRESETS = {
         { role: "flow", label: "User Flow", hint: "사용자 흐름" },
         { role: "screen", label: "Screen", hint: "화면" },
         { role: "component", label: "Component", hint: "구현 단위" },
+        { role: "section", label: "Section / Frame", hint: "그룹 컨테이너" },
       ]},
       { title: "근거", desc: "결정 배경", items: [
         { role: "claim", label: "Rationale", hint: "결정 근거 (supports)" },
@@ -5048,6 +5087,31 @@ const STENCIL_PRESETS = {
       ]},
     ],
   },
+  writing: {
+    name: "글쓰기 (소설·에세이·SNS 공통)",
+    categories: [
+      { title: "기획", desc: "무엇을 · 누구에게 · 어떤 형식", items: [
+        { role: "goal", label: "핵심 메시지 / 로그라인", hint: "한 문장으로: 이 글이 독자에게 남길 것" },
+        { role: "persona", label: "독자 / 타깃", hint: "누구에게·읽는 상황(피드 스크롤? 정주행?)" },
+        { role: "note", label: "형식 · 톤 · 문체", hint: "소설/에세이/SNS 택1. 시점(1·3인칭)·시제·호흡" },
+      ]},
+      { title: "기 · 승 · 전 · 결", desc: "막/장/단락 = frame", items: [
+        { role: "section", label: "기(起) · 도입", hint: "훅·설정. SCQA의 S / AIDA 주목 / PAS 문제" },
+        { role: "section", label: "승(承) · 전개", hint: "상승. 근거·예시(PREP) / AIDA 흥미 / PAS 증폭" },
+        { role: "section", label: "전(轉) · 전환", hint: "절정·반전. SCQA의 Q / 중간점 / BAB After" },
+        { role: "section", label: "결(結) · 결말", hint: "해결·행동. 재주장 / AIDA 행동 / BAB 다리" },
+      ]},
+      { title: "전개 단위", desc: "각 단 안에 들어갈 조각", items: [
+        { role: "flow-step", label: "장면 / 비트 / 단락", hint: "1단위 (Save the Cat 비트·문단·슬라이드)" },
+        { role: "flow", label: "스토리 아크", hint: "전체 흐름 컨테이너" },
+      ]},
+      { title: "마무리", desc: "페이오프 · CTA · 근거", items: [
+        { role: "claim", label: "페이오프 / 핵심 한 줄", hint: "독자가 캡처·공유·기억할 그 한 문장" },
+        { role: "claim", label: "논거 / 주장", hint: "결론을 받치는 (supports 필수)" },
+        { role: "note", label: "CTA / 메모", hint: "행동 유도·자유 메모" },
+      ]},
+    ],
+  },
 };
 
 const VALID_ROLES = ["product","goal","persona","metric","requirement","feature","flow","flow-step","screen","screen-element","component","data-entity","section","claim","note"];
@@ -5083,11 +5147,19 @@ function buildStencilPanel() {
   if (!STENCIL_CATEGORIES) loadStencilCategories();
 
   // 헤더 — 프리셋 + 편집 토글
+  // 템플릿(전체 교체)은 캔버스가 비었을 때만 노출. 작업 중이면 스텐실(카드 세트)만.
+  const isBlank = !BP || !BP.nodes || BP.nodes.length <= 1;
+  const templateGroupHtml = isBlank ? `
+        <optgroup label="시작 템플릿 (캔버스 전체 교체)">
+          ${TEMPLATE_LIST.map(t => `<option value="tpl:${t.key}">${esc(t.label)}</option>`).join("")}
+        </optgroup>` : "";
   const headerHtml = `
     <div style="padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--panel-border); display:flex; gap: var(--s-2); align-items:center; flex-wrap:wrap; background: var(--bg);">
-      <select onchange="if(this.value){applyStencilPreset(this.value);this.value='';}" style="flex:1;font-size:11px;padding:4px 8px;">
-        <option value="">프리셋 선택…</option>
-        ${Object.entries(STENCIL_PRESETS).map(([k,v]) => `<option value="${k}">${esc(v.name)}</option>`).join("")}
+      <select onchange="onStencilSelectChange(this.value);this.value='';" style="flex:1;font-size:11px;padding:4px 8px;">
+        <option value="">${isBlank ? "프리셋·템플릿 선택…" : "팔레트 스텐실 선택…"}</option>
+        <optgroup label="팔레트 스텐실 (카드 세트만 교체)">
+          ${Object.entries(STENCIL_PRESETS).map(([k,v]) => `<option value="stencil:${k}">${esc(v.name)}</option>`).join("")}
+        </optgroup>${templateGroupHtml}
       </select>
       <button onclick="toggleStencilEdit()" style="font-size:11px;padding:4px 10px;${_stencilEditMode?'background:var(--accent);color:var(--accent-fg);border-color:var(--accent);':''}">
         ${_stencilEditMode ? "✓ 편집 완료" : "⚙ 편집"}
@@ -5138,7 +5210,7 @@ function buildStencilPanel() {
         ${cat.items.map(it => `
           <div class="stencil-card" style="--role-color: var(--color-${it.role});"
                draggable="false"
-               onpointerdown="startStencilDrag(event, '${it.role}', '${esc(it.label)}')">
+               onpointerdown="startStencilDrag(event, '${it.role}', '${jsStr(it.label)}', '${jsStr(it.hint || '')}')">
             <div class="role-tag">${esc(it.role)}</div>
             <div class="role-name">${esc(it.label)}</div>
             <div style="font-size:10px;color:var(--muted);margin-top:3px;">${esc(it.hint || '')}</div>
@@ -5181,7 +5253,7 @@ function addItem(ci) {
 }
 
 let _stencilDrag = null; // { role, label, ghost }
-function startStencilDrag(e, role, label) {
+function startStencilDrag(e, role, label, hint) {
   e.preventDefault();
   e.stopPropagation();
   const ghost = document.createElement("div");
@@ -5191,7 +5263,7 @@ function startStencilDrag(e, role, label) {
   ghost.innerHTML = `<div class="role-tag" style="color:var(--color-${role})">${role}</div><div class="role-name">${esc(label)}</div>`;
   document.body.appendChild(ghost);
   ghost.style.left = e.clientX + "px"; ghost.style.top = e.clientY + "px";
-  _stencilDrag = { role, label, ghost, startX: e.clientX, startY: e.clientY, moved: false };
+  _stencilDrag = { role, label, hint: hint || "", ghost, startX: e.clientX, startY: e.clientY, moved: false };
 
   function onMove(ev) {
     ghost.style.left = ev.clientX + "px"; ghost.style.top = ev.clientY + "px";
@@ -5206,10 +5278,10 @@ function startStencilDrag(e, role, label) {
       // canvas 좌표 계산: container 기준 mouse → canvas (pan/zoom 보정)
       const cx = (ev.clientX - rect.left - panX) / zoom;
       const cy = (ev.clientY - rect.top - panY) / zoom;
-      spawnStencilNode(_stencilDrag.role, _stencilDrag.label, cx - 112, cy - 44);
+      spawnStencilNode(_stencilDrag.role, _stencilDrag.label, cx - 112, cy - 44, _stencilDrag.hint);
     } else if (!_stencilDrag.moved) {
       // 클릭만 한 경우(드래그 거의 없음): 캔버스 중앙에 추가
-      spawnStencilNode(_stencilDrag.role, _stencilDrag.label, null, null);
+      spawnStencilNode(_stencilDrag.role, _stencilDrag.label, null, null, _stencilDrag.hint);
     }
     ghost.remove();
     _stencilDrag = null;
@@ -6851,10 +6923,12 @@ function applyFrameContainment(frameId) {
   }
 }
 
-function spawnStencilNode(role, label, x, y) {
+function spawnStencilNode(role, label, x, y, hint) {
   saveState("stencil");
   const id = `n_${role.replace(/-/g,"_")}_${Date.now() % 100000}`;
-  const node = { id, role, title: `새 ${label}`, status: "draft", attrs: {} };
+  // 프리셋이 제시한 라벨을 제목으로, hint(가이드)를 본문으로 그대로 반영 — 일반 노드와 구분되게.
+  const node = { id, role, title: label || role, status: "draft", attrs: {} };
+  if (hint) node.body = hint;
   // role별 디폴트 부여
   if (role === "feature") node.priority = "P1";
   if (role === "data-entity") node.attrs.fields = [];
@@ -7178,8 +7252,60 @@ function loadTemplate(key) {
   toast(`템플릿 적용: ${key}`, "ok");
 }
 
+// 드롭다운·명령팔레트·환영화면이 공유하는 템플릿 목록 (단일 출처)
+const TEMPLATE_LIST = [
+  { key: "saas",          label: "SaaS 제품" },
+  { key: "mobile",        label: "모바일 앱" },
+  { key: "marketing",     label: "마케팅 페이지" },
+  { key: "okr",           label: "OKR / 전략" },
+  { key: "agent-harness", label: "🛡 Agent Harness" },
+  { key: "code-review",   label: "👁 Code Review Policy" },
+  { key: "decision",      label: "⚖ Decision Framework" },
+  { key: "writing",       label: "✍ 글쓰기 (통합)" },
+  { key: "novel",         label: "📖 소설 / 내러티브" },
+  { key: "essay",         label: "📝 짧은 글 / 에세이" },
+  { key: "sns",           label: "📣 SNS / 카피" },
+];
+
+// 공백 캔버스 — 루트 product 노드 1개만. autoLayout 후 환영화면 닫힘.
+function startBlankBlueprint() {
+  saveState("blank");
+  BP = {
+    meta: { id: "bp_blank", title: "빈 블루프린트", version: "0.1", rev: 1 },
+    nodes: [{ id: "n_root", role: "product", title: "제목 없는 산출물", status: "draft" }],
+    edges: [],
+  };
+  document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+  autoLayout(); render();
+  selectNode("n_root");
+  toast("공백으로 시작", "ok");
+}
+
+// 기존 작업이 있으면 교체 전 확인 (welcome 화면이 아닐 때)
+function loadTemplateGuarded(key) {
+  const dirty = BP && BP.nodes && BP.nodes.length > 1;
+  if (dirty) {
+    openConfirm("템플릿 적용", "현재 캔버스를 템플릿으로 교체할까요? (실행 취소로 되돌릴 수 있음)", () => loadTemplate(key));
+  } else loadTemplate(key);
+}
+function startBlankGuarded() {
+  const dirty = BP && BP.nodes && BP.nodes.length > 1;
+  if (dirty) {
+    openConfirm("공백으로 시작", "현재 캔버스를 빈 블루프린트로 교체할까요? (실행 취소로 되돌릴 수 있음)", () => startBlankBlueprint());
+  } else startBlankBlueprint();
+}
+
+// 통합 드롭다운 라우터 — stencil:KEY (카드세트) / tpl:KEY (전체교체)
+// 공백 시작은 환영화면 카드·명령팔레트로만 진입 (드롭다운에는 노출 안 함).
+function onStencilSelectChange(value) {
+  if (!value) return;
+  if (value.startsWith("stencil:")) { applyStencilPreset(value.slice(8)); return; }
+  if (value.startsWith("tpl:")) { loadTemplateGuarded(value.slice(4)); return; }
+}
+
 // =================== COMMAND PALETTE ===================
 const PALETTE_ACTIONS = [
+  { id:"blank", title:"공백으로 시작", hint:"빈 캔버스 (루트 노드만)", run: () => startBlankGuarded() },
   { id:"add_node", title:"노드 추가", hint:"자동으로 root 아래 feature", run: () => addNode() },
   { id:"autolayout", title:"자동 정렬", hint:"layered DAG", run: () => { autoLayout(); render(); } },
   { id:"missing", title:"미완료 검토", hint:"필수 슬롯 누락 표시", run: () => showMissingCheck() },
@@ -7296,6 +7422,7 @@ document.addEventListener("keydown", e => {
   if (meta && e.key === "." && !modalOpen) { e.preventDefault(); openGeneralSettings(); return; }
   if (meta && e.key.toLowerCase() === "o" && !e.shiftKey && !modalOpen) { e.preventDefault(); toggleOutline(); return; }
   if (meta && e.shiftKey && e.key.toLowerCase() === "m" && !modalOpen) { e.preventDefault(); openSendToModelModal(); return; }
+  if (meta && e.key.toLowerCase() === "g" && !modalOpen && _multiSel.size > 1) { e.preventDefault(); groupSelected(); return; }
 
   // Palette navigation — 통합 모달의 팔레트 입력에 포커스가 있을 때만 (입력은 oninput=renderPalette)
   if (searchModal.open && document.activeElement && document.activeElement.id === "palette-input") {
@@ -7377,6 +7504,8 @@ function toast(text, kind) {
 
 // =================== UTIL ===================
 function esc(s) { return String(s || "").replace(/[&<>'"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;" })[c]); }
+// 인라인 핸들러의 작은따옴표 JS 인자로 안전 임베드 (백슬래시·따옴표 이스케이프 후 HTML-escape)
+function jsStr(s) { return esc(String(s == null ? "" : s).replace(/\\/g, "\\\\").replace(/'/g, "\\'")); }
 
 // =================== Modal Stack (T-AJ) ===================
 // 여러 dialog 가 동시에 열린 경우 최상위(=가장 최근 open) 모달에만 키보드를 라우팅.
