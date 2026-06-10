@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { BlueprintStore } from "./store.js";
+import { createStorage, getActiveBackendId } from "./server/storage/index.js";
 import { serializeForModel } from "./core/serialize.js";
 import { detectMissing, missingToClarify } from "./core/missing.js";
 import type { BlueprintOp } from "./core/ops.js";
@@ -23,13 +23,16 @@ import { ubpSelf } from "./samples/ubp-self.js";
  *   - confirm: 사람 actor 권장(actor 인수 필수화 가능). baseRev mismatch 시 거부.
  *   - audit/snapshot/restore: 모든 변경 추적 + 롤백 가능.
  */
+// filesystem 백엔드는 UBP_STORE 경로를 그대로 사용 — 디렉토리 선보장(무회귀).
 const STORE_PATH = process.env.UBP_STORE ?? ".blueprint/bp.json";
 try {
   mkdirSync(dirname(STORE_PATH) || ".", { recursive: true });
 } catch {
   /* ignore */
 }
-const store = new BlueprintStore(ubpSelf, STORE_PATH);
+// UBP_BACKEND 로 백엔드 선택: 미설정 → filesystem(UBP_STORE), supabase → 옵션3 클라우드 공유.
+const store = await createStorage(ubpSelf);
+console.error(`[ubp] storage backend: ${getActiveBackendId()}`);
 
 // 정책 핫리로드 — BLUEPRINT.md 변경 시 currentPolicy 가 갱신됨.
 const POLICY_PATH = process.env.UBP_POLICY ?? "BLUEPRINT.md";

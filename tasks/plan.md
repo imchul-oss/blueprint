@@ -1,120 +1,157 @@
-# Implementation Plan: MCP-로컬 사용 기준 검증·하드닝 패스
+# Implementation Plan: 설정 기반 단일 store 통합 (옵션 2 + 옵션 3, 자동 강등)
 
-## Overview
-사용자는 UBP를 **REST API/SaaS가 아니라 MCP 형태로 (로컬 포함) 사용**한다. 코드 확인 결과 **MCP 로컬 사용은 가능**하다 — `mcp-server.ts`가 `BlueprintStore`(store.ts)를 **직접** 쓰고 **stdio** 트랜스포트 + **로컬 파일시스템 스토어**(`UBP_STORE ?? .blueprint/bp.json`)로 동작하며, **네트워크/Supabase/REST 서버가 전혀 필요 없다**. 따라서 하드닝의 초점을 **MCP 도구 표면 + store/core**로 재조정한다. Supabase/postgres/turso 어댑터와 REST 서버(src/server/index.ts)는 **SaaS 멀티유저 경로**로, 이번 MCP-로컬 패스의 **범위 밖**이다.
+## 목표 (사용자 의도)
+웹 GUI와 MCP가 **같은 단일 진실원천**을 보게 한다. 모드는 *설정 존재 여부*로 자동 결정한다.
 
-## MCP-로컬 가능 근거 (실측 2026-06-10)
-- `dist/test-mcp-e2e.js`가 `node dist/mcp-server.js`를 stdio로 spawn → `listTools`(20개) → `read_blueprint`/`propose_update` 라운드트립 성공. 외부 네트워크 0.
-- `mcp-server.ts:6,32` → `new BlueprintStore(ubpSelf, STORE_PATH)`, `STORE_PATH=UBP_STORE ?? ".blueprint/bp.json"`. 스토리지 어댑터 레이어 미사용.
-- 등록 예(BLUEPRINT.md §13): `{ "command":"node","args":["dist/mcp-server.js"],"env":{"UBP_STORE":".blueprint/bp.json","UBP_POLICY":"BLUEPRINT.md"} }`.
+- **Supabase 미설정 → 옵션 2 (로컬 파일)**: 웹과 MCP가 같은 `.blueprint/bp.json`을 공유.
+- **Supabase 설정 → 옵션 3 (클라우드)**: 웹과 MCP가 같은 Supabase `blueprints` 행을 공유. 멀티 기기 양방향.
+- 둘 다 아니면 **tier 0 (이 브라우저만)**: localStorage. "html만 열면 됨" 기본 동작 보존.
+- **신규 사용자 혼란 방지가 1급 요구사항**: 활성 store를 항상 *눈에 보이게 + 자가설명*. 침묵 전환·침묵 덮어쓰기 금지.
 
-## 베이스라인 (실측)
-| 표면 | 상태 | 비고 |
-|---|---|---|
-| build (`node node_modules/typescript/bin/tsc`) | ✅ EXIT 0 | `npm run build`는 셸 PATH quirk로만 실패 |
-| `npm run smoke` | ✅ 24/24 | core 로직, env-independent |
-| `dist/test-mcp-logic.js` (SDK-less) | ✅ 7/7 | **단, npm 스크립트 미연결(orphan)** |
-| `dist/test-mcp-e2e.js` (real stdio) | ⚠️ **false-green** | confirm 단계 regex `(p_\d+)`가 hex ID `p_a625f0db` 불일치 → `confirm_update("")` no-op, 그래도 exit 0 |
-| MCP 20개 도구 | ⚠️ 3개만 e2e | 17개 도구표면 무검증 |
-| `npm test` (vitest) | ❌ rollup native 누락 | env 이슈, smoke가 대체 |
-| Supabase/postgres/turso 어댑터 | — | **범위 밖** (REST/SaaS 경로) |
+## 현재 코드 실측 (2026-06-10)
+- 웹 저장: `saveBP`/`loadBP`(whiteboard.html ~2232/2257) = **localStorage `ubp_bp`**. Supabase는 `saveBPToCloud`/`loadBPFromCloud`(~2290) **raw upsert**(rev-lock·confirm 게이트 없음, last-writer-wins). `?api=&ws=&token=` SSE/poll(~8128)은 **읽기 인지만**("새로고침 필요" 토스트), 쓰기 안 함.
+- MCP: `src/mcp-server.ts` → `new BlueprintStore(initial, UBP_STORE)` 파일 직결. `src/store.ts`는 **생성자에서 파일 1회 읽고 메모리 보유** → 외부(웹)가 파일을 고쳐도 안 봄.
+- **이미 존재(옵션 3 토대 ~80%)**: `src/server/index.ts`(인증·workspace·proposals/confirm·SSE·compliance HTTP API), `src/server/storage/{interface,index,filesystem,supabase,postgres,turso}.ts`(`UBP_BACKEND`로 교체), `SupabaseStorage`(Realtime 구독+rev-lock confirm 구현됨). `createStorage()` 팩토리도 있음.
+- 빠진 것: (1) 웹이 서버/클라우드/공유파일로 **쓰기**를 안 함, (2) MCP가 `createStorage()`(backend-resolved)를 안 거침 + 외부 파일 변경 재읽기 없음.
 
-## Architecture Decisions
-- **하드닝 초점 = MCP 경로**: `mcp-server.ts`(도구 20개) + `store.ts` + `core/*`. 전부 node·env-independent.
-- **MCP 테스트를 npm 스크립트로 연결**: `test:mcp`(logic, SDK-less) + `test:mcp:e2e`(build→spawn). 지금은 orphan이라 회귀가 자동으로 안 잡힌다.
-- **store.ts/core는 이미 smoke 24/24 커버** → 신규 작업은 MCP **도구 표면**(미검증 17개)과 **e2e false-green 수정**에 집중.
-- **Supabase/REST는 범위 밖**: MCP-로컬 사용과 무관. 이전 계획의 Supabase 하드닝 태스크는 폐기.
-- **브라우저(GUI)는 별개 축**: 화이트보드는 사람 저작 도구 — MCP 소비와 직교하나 사이클 1–4 산출이므로 회귀 검증 유지(agent-browser `ubp-debug`). FS-Access 다이얼로그는 자동화 불가 → 수동 레시피 분리.
+## 아키텍처 결정
+1. **config-driven 해석(라우트 Y) 채택. 상시 HTTP 서버 강제 안 함.** "html 열면 동작"하는 local-first 정체성 보존 — 신규 사용자가 서버를 띄울 필요 없음. `src/server/*`는 옵션 3의 *선택적* 멀티유저 경로로 유지(이번 범위에서 필수 아님). 옵션 3 최단 경로는 웹·MCP가 **동일 Supabase 행 직접 공유**(SupabaseStorage가 이미 그 계약을 구현).
+2. **웹에 `StoreAdapter` 단일 인터페이스 도입**: `load() / save(bp, baseRev) / subscribe(onRemote) / info()`. 3 구현: `LocalStore`(localStorage), `FileStore`(File System Access → bp.json), `CloudStore`(Supabase, rev-lock + Realtime). 기존 `saveBP/loadBP`를 이 어댑터 뒤로 라우팅.
+3. **단일 진실원천 불변식**: 동시에 정확히 하나의 store만 authoritative. 동시 이중 쓰기 금지(클라우드 활성 시 localStorage는 *읽기전용 오프라인 캐시*로만, 명시 표시). 티어 전환 = 명시적 migrate(현재 BP → 새 store seed) + confirm.
+4. **rev 낙관락을 모든 쓰기 경로에 통일**: 저장 직전 현재 store rev 재확인 → baseRev 불일치면 중단 + 분기/머지 다이얼로그(기존 merge-modal 재사용). 침묵 덮어쓰기 금지.
+5. **MCP 외부 변경 재읽기**: `BlueprintStore`에 파일 mtime/rev 가드 추가 — get/propose/confirm 직전 파일이 외부에서 바뀌었으면 재로드. 옵션 2 양방향의 필수 조건.
+
+## 의존 그래프
+```
+A (계약·resolver 스켈레톤)
+├─→ B (옵션 2 수직: 웹 FileStore + MCP mtime 재읽기)   ← Supabase 불필요, 단독 출고 가능
+├─→ C (옵션 3 수직: 웹 CloudStore live + MCP supabase backend 결선 + 스키마)
+│      (MCP측은 B와 독립 / e2e는 웹+MCP 둘 다 필요)
+└─→ D (resolver 확정 + 상태 배지 + 온보딩 + 분기/migrate 다이얼로그)  ← B·C 어댑터 의존
+        └─→ E (문서: BLUEPRINT.md 3-티어 · README 셋업 · MCP env)
+```
 
 ## Task List
 
-### Phase 0: 하네스 기반 (fail-fast)
-- [ ] **T0: MCP 테스트 npm 연결 + 베이스라인 확정**
+### Phase A: store 계약 + resolver 스켈레톤
+- [ ] **TA1** `StoreAdapter` 인터페이스 + 3 구현 stub + `resolveStore()`(설정→티어) + UI 상태 모델
 
-### Checkpoint: Foundation
-- [ ] `npm run test:mcp` / `test:mcp:e2e`가 도는 명령으로 존재, smoke 그린
+### Checkpoint A
+- [ ] 기존 동작 무회귀(localStorage 경로가 LocalStore로 흘러도 smoke·GUI 정상), resolveStore가 3티어 정확 판정
 
-### Phase 1: MCP 도구 표면 하드닝 (node)
-- [ ] **T1: e2e false-green confirm 수정 + 로컬 MCP 증명**
-- [ ] **T2: MCP 도구 표면 커버리지 확장 (미검증 17개 중 핵심)**
+### Phase B: 옵션 2 — 로컬 파일 공유 (수직)
+- [ ] **TB1** 웹 `FileStore`: File System Access로 `.blueprint/bp.json` read/write + 핸들 IndexedDB 영속 + 권한 재요청
+- [ ] **TB2** rev-lock 저장 + audit.jsonl append + snapshots/ 기록(MCP 디시플린 동등) + 원자적 swap
+- [ ] **TB3** MCP `BlueprintStore` 외부 파일 변경 재읽기(mtime/rev 가드)
+- [ ] **TB4** 웹 focus/visibility + 주기 폴링으로 파일 재읽기 → 원격(MCP) 변경 반영
 
-### Checkpoint: MCP
-- [ ] e2e가 confirm 실제 반영을 hard-assert, 핵심 도구 라운드트립 그린
+### Checkpoint B (옵션 2 end-to-end, Supabase 없이)
+- [ ] 웹 편집·confirm → MCP `read_blueprint`가 즉시 같은 BP. MCP propose+confirm → 웹이 재읽기로 반영. rev 충돌 시 머지 다이얼로그.
 
-### Phase 2: 프런트엔드(GUI) 회귀 (browser, agent-browser)
-- [ ] **T3: JSON Canvas 라운드트립 + properties 매핑** (사이클1)
-- [ ] **T4: 첨부 저장 4모드 ref·다운그레이드** (사이클2)
-- [ ] **T5: anchor scan 파싱 + UI 폴리시 회귀** (사이클3·4)
+### Phase C: 옵션 3 — 클라우드 공유 (수직)
+- [ ] **TC1** MCP: `mcp-server.ts`를 `createStorage()`(backend-resolved)로 전환. env 있으면 supabase, 없으면 filesystem(무회귀). `@supabase/supabase-js` optionalDep + `supabase.sql` 스키마 확인/문서화
+- [ ] **TC2** 웹 `CloudStore`: 기존 raw upsert를 rev-lock 쓰기(update where rev=baseRev)로 격상 + Realtime 구독(원격 confirm 반영). workspace_id 계약 SupabaseStorage와 정합
+- [ ] **TC3** 웹·MCP 동일 workspace_id 공유 + 분기 처리
 
-### Checkpoint: Complete
-- [ ] MCP-로컬 경로 검증 그린 + GUI 회귀 경로 확보(자동 or 명시적 수동 레시피)
+### Checkpoint C (옵션 3 end-to-end)
+- [ ] 웹 편집 → Supabase → MCP(supabase backend)가 봄. MCP 변경 → 웹 Realtime 반영. rev-lock으로 동시쓰기 안전.
+
+### Phase D: resolver 확정 + 혼란 방지 UX
+- [ ] **TD1** 헤더 **저장 상태 배지**: 🟢클라우드(MCP·여러 기기) / 🔵로컬 파일(MCP 공유) / ⚪이 브라우저만 — 라벨+아이콘+tooltip
+- [ ] **TD2** 배지 클릭 패널: 현재 모드 설명 + 업그레이드("폴더 연결"/"클라우드 연결") + 해제. 설정 "저장·백엔드" 탭과 일원화
+- [ ] **TD3** **분기 다이얼로그**: 연결 시 대상 store BP ≠ 현재 BP면 선택/머지(침묵 덮어쓰기 금지, merge-modal 재사용)
+- [ ] **TD4** 1회성 온보딩 줄 추가(ubp_onb_done): 3티어 3줄 설명
+- [ ] **TD5** 티어 전환 migrate + confirm + 단일 진실원천 불변식(이중 쓰기 차단)
+
+### Checkpoint D
+- [ ] 새 사용자가 "내 데이터가 어디 있는지" 배지만 보고 안다. 연결/업그레이드/해제 흐름이 분기·확인을 거친다.
+
+### Phase E: 문서
+- [ ] **TE1** BLUEPRINT.md §7/§13에 3티어 store 모델 + 셋업 매트릭스. README에 옵션2/3 설정. MCP env(UBP_BACKEND/SUPABASE_*/UBP_WORKSPACE_ID) 표.
+
+### Checkpoint E (Complete)
+- [ ] 옵션2·옵션3 각 end-to-end 그린 + tier0 무회귀 + 문서 정합 + smoke 24/24 + build EXIT0.
 
 ---
 
-## Task 0: MCP 테스트 npm 연결 + 베이스라인 확정
-**Description:** orphan 상태인 두 MCP 테스트를 npm 스크립트로 연결한다. `test:mcp`(=`tsx src/test-mcp-logic.ts` 또는 컴파일본), `test:mcp:e2e`(=build 후 `node dist/test-mcp-e2e.js`). build/smoke 그린 확인, README에 로컬 MCP 실행·검증 명령 1줄 추가.
-**Acceptance criteria:**
-- [ ] `package.json`에 `test:mcp`, `test:mcp:e2e` 스크립트 추가
-- [ ] `npm run test:mcp` 그린(7/7), `npm run test:mcp:e2e` 실행됨
-- [ ] README에 로컬 MCP 등록·검증 명령 반영
-**Verification:** `npm run test:mcp` 7/7 · `npm run smoke` 24/24 · build EXIT 0
-**Dependencies:** None · **Files:** `package.json`, `README.md` · **Scope:** S
+## 상세 Task
 
-## Task 1: e2e false-green confirm 수정 + 로컬 MCP 증명
-**Description:** `test-mcp-e2e.ts`의 proposalId 추출 regex `(p_\d+)`가 실제 hex ID(`p_a625f0db`)와 불일치 → `confirm_update("")`가 no-op인데도 테스트가 exit 0. regex를 `p_\w+`로 고치고, **confirm 후 n_demo 반영을 hard-assert**(미반영 시 exit 1)로 바꾼다. 네트워크 0 + 파일시스템 스토어 동작을 명시 검증.
-**Acceptance criteria:**
-- [ ] proposalId가 hex ID를 정확히 캡처
-- [ ] confirm_update 후 read_blueprint에 n_demo 존재 → 아니면 exit 1 (false-green 제거)
-- [ ] 임시 `UBP_STORE`(temp 경로) 사용해 실 `.blueprint` 비오염
-**Verification:** `npm run test:mcp:e2e` → 의도적으로 regex 되돌리면 RED, 수정본은 GREEN
-**Dependencies:** T0 · **Files:** `src/test-mcp-e2e.ts` · **Scope:** S
+### TA1 — store 계약 + resolver
+**Files:** `web/whiteboard.html`(신규 어댑터 IIFE 블록), 영향: `saveBP/loadBP` 호출부.
+**AC:** `StoreAdapter`(load/save/subscribe/info) 정의 · LocalStore가 기존 localStorage 동작 1:1 래핑 · `resolveStore()`가 (supabase설정?cloud:파일핸들?file:local) 판정 · `info()`가 배지용 {tier,label,shared} 반환.
+**Verify:** agent-browser `ubp-debug` eval — resolveStore()가 각 설정 조합에서 기대 티어. 기존 편집·저장·새로고침 복원 무회귀.
+**Dep:** none · **Scope:** M
 
-## Task 2: MCP 도구 표면 커버리지 확장
-**Description:** e2e가 20개 중 3개만 호출. stdio 클라이언트로 핵심 미검증 도구를 호출·검증: `get_policy`(정책 JSON), `get_missing`, `list_pending`, `reject_update`, `tail_audit`, `list_snapshots`+`restore_snapshot`(라운드트립), `scan_code_anchors`, `list_conflicts`, `compliance_stats`, `propose_from_prompt`, `get_harness`. 각 도구 sane 출력 + 상태전이 hard-assert.
-**Acceptance criteria:**
-- [ ] 위 도구 호출 시 에러 없이 의미있는 응답
-- [ ] snapshot→restore 라운드트립이 rev/상태 복구를 검증
-- [ ] reject_update 후 list_pending에서 제거 확인
-- [ ] 실패 시 exit 1
-**Verification:** `npm run test:mcp:e2e` 확장 블록 그린, 네트워크 0
-**Dependencies:** T1 · **Files:** `src/test-mcp-e2e.ts`(또는 `src/test-mcp-tools.ts` 신규) · **Scope:** M
+### TB1 — 웹 FileStore (File System Access)
+**Files:** `web/whiteboard.html`.
+**AC:** `showDirectoryPicker`로 프로젝트/.blueprint 폴더 선택 → `getFileHandle('bp.json',{create:true})` · 핸들 IndexedDB 영속 → 재로드 후 `queryPermission`/`requestPermission` 재확보 · 미지원 브라우저(파이어폭스 등) 친절 안내 후 tier0 폴백.
+**Verify:** (수동, 다이얼로그 자동화 불가) 폴더 연결 → bp.json 생성 확인 · 재로드 후 권한 재요청 1클릭 복구. 레시피 `tasks/browser-verify.md`.
+**Dep:** TA1 · **Scope:** M
 
-## Task 3: JSON Canvas 라운드트립 + properties 매핑 (사이클1)
-**Description:** agent-browser `ubp-debug` eval로 `exportJsonCanvas`↔`jsonCanvasToBP` 라운드트립 검증. BP→canvas→BP 구조 동치 + Obsidian frontmatter/Dataview properties→attrs + section frame 매핑.
-**Acceptance criteria:**
-- [ ] export→import 후 노드 수·엣지 from/to·role 보존
-- [ ] frontmatter/dataview properties가 `node.attrs.<key>`로 매핑
-- [ ] section role + `attrs.frame` 매핑
-**Verification:** eval 어서션 통과, 레시피 `tasks/browser-verify.md` 저장
-**Dependencies:** T0(병렬 가능) · **Files:** `tasks/browser-verify.md` · **Scope:** S
+### TB2 — 파일 쓰기 디시플린(rev-lock·audit·snapshot)
+**Files:** `web/whiteboard.html`.
+**AC:** 저장 전 bp.json 재읽기→현재 rev 비교, baseRev 불일치면 중단(머지 트리거) · createWritable 임시쓰기+close(원자성) · `.blueprint/audit.jsonl`에 propose/confirm append · `.blueprint/snapshots/r#####-<sha>.json` 기록(50개 유지). `src/store.ts` 포맷과 동일.
+**Verify:** 웹 confirm 후 audit.jsonl 라인 증가 + snapshots 파일 생성. 의도적 rev 조작 시 머지 다이얼로그.
+**Dep:** TB1 · **Scope:** L
 
-## Task 4: 첨부 저장 4모드 ref·다운그레이드 (사이클2)
-**Description:** inline/idb(`@idb:`)/url ref 포맷 자동 검증 + >10MB inline→idb 다운그레이드. local-fs(`showSaveFilePicker`, user-gesture)는 수동 레시피로 분리.
-**Acceptance criteria:**
-- [ ] inline→base64, idb→`@idb:<id>`, url→외부 URL ref 자동 검증
-- [ ] >10MB+inline → idb 다운그레이드 (whiteboard.html ~5757)
-- [ ] local-fs 수동 단계 명시(통과 위장 금지)
-**Verification:** eval 어서션, 수동 단계 `tasks/browser-verify.md` 기재
-**Dependencies:** T3 · **Files:** `tasks/browser-verify.md` · **Scope:** M
+### TB3 — MCP 외부 파일 재읽기
+**Files:** `src/store.ts`(get/propose/confirm 직전 가드), 가능시 `src/mcp-server.ts`.
+**AC:** 파일 mtime 또는 디스크 rev > 메모리 rev면 재로드 후 진행 · 재로드와 진행중 propose의 baseRev 충돌은 기존 rev_mismatch로 안전 거부 · filesystem 외 backend엔 무영향.
+**Verify:** `npm run test:mcp:e2e` 확장 — 외부에서 bp.json 교체 후 read_blueprint가 새 내용. smoke 24/24, build EXIT0.
+**Dep:** none(B 묶음) · **Scope:** M
 
-## Task 5: anchor scan 파싱 + UI 폴리시 회귀 (사이클3·4)
-**Description:** anchor 마커 파싱 fixture 자동 검증(`showDirectoryPicker`는 수동) + 이번 세션 UI(collapse 핸들 flush·writing 템플릿) 회귀 고정.
-**Acceptance criteria:**
-- [ ] 마커 fixture → file 노드 + traces-to (자동)
-- [ ] directory-picker 수동 레시피
-- [ ] collapse 핸들 14×32·flush(|gap|<1.5px)·opacity0; writing/novel/essay/sns 노드수 11/22/14/17
-- [ ] 스크린샷 1장
-**Verification:** eval+screenshot, 레시피 저장
-**Dependencies:** T4 · **Files:** `tasks/browser-verify.md` · **Scope:** M
+### TB4 — 웹 원격 변경 반영
+**Files:** `web/whiteboard.html`.
+**AC:** `visibilitychange`/`focus` + 저빈도 폴링으로 파일 rev 변화 감지 → 미저장 로컬 변경 없으면 자동 재로드, 있으면 "원격 N회 변경" 머지 안내(기존 토스트/머지 재사용) · 무한 저장 루프 방지.
+**Verify:** MCP confirm → 웹 탭 포커스 시 rev-pill·캔버스 갱신.
+**Dep:** TB2,TB3 · **Scope:** M
 
-## Risks and Mitigations
+### TC1 — MCP backend 해석 전환
+**Files:** `src/mcp-server.ts`, `package.json`(optionalDep), 문서.
+**AC:** `BlueprintStore` 하드코딩 → `await createStorage(initial,{authz})` · env 없으면 filesystem(기존과 동일, 무회귀) · `UBP_BACKEND=supabase`+`SUPABASE_URL/KEY`+`UBP_WORKSPACE_ID`면 SupabaseStorage · 의존성 없을 때 친절 에러.
+**Verify:** env 없는 `test:mcp:e2e` 19-tool 그린(무회귀) · (수동/mock) supabase backend bootstrap 성공.
+**Dep:** none · **Scope:** M
+
+### TC2 — 웹 CloudStore (rev-lock + Realtime)
+**Files:** `web/whiteboard.html`.
+**AC:** 기존 raw upsert → 조건부 update(`rev=baseRev`) 또는 RPC로 rev-lock · 실패 시 머지 · Realtime(또는 폴백 폴링) 구독해 원격 confirm 반영 · SupabaseStorage 행 계약(workspace_id,bp,rev) 정합.
+**Verify:** 두 탭(또는 탭+MCP)에서 한쪽 confirm → 다른쪽 Realtime 반영, 동시 편집 시 한쪽 rev-lock 거부+머지.
+**Dep:** TA1 · **Scope:** L
+
+### TC3 — 웹·MCP 클라우드 공유 정합
+**Files:** `web/whiteboard.html`, 문서.
+**AC:** 웹 UI에서 workspace_id 설정·표시 · MCP `UBP_WORKSPACE_ID`와 동일하면 같은 행 공유 · 불일치 시 경고.
+**Verify:** 동일 workspace에서 웹↔MCP 양방향 1회 라운드트립.
+**Dep:** TC1,TC2 · **Scope:** S
+
+### TD1–TD5 — 혼란 방지 UX
+**Files:** `web/whiteboard.html`.
+**AC:** 헤더 배지 3-상태 + tooltip(TD1) · 배지 패널 업그레이드/해제, 설정 탭 일원화(TD2) · 분기 다이얼로그 침묵덮어쓰기 금지(TD3) · 온보딩 3줄(TD4) · 티어 전환 migrate+confirm+이중쓰기 차단(TD5).
+**Verify:** 각 티어에서 배지 정확 · 분기 시 다이얼로그 · 새 프로필 온보딩 노출. 스크린샷 3장(티어별).
+**Dep:** TB*,TC* · **Scope:** L
+
+### TE1 — 문서
+**Files:** `BLUEPRINT.md`, `README.md`.
+**AC:** 3티어 모델·결정 흐름·셋업 매트릭스 · MCP env 표 · 옵션2(폴더 연결)/옵션3(Supabase) 단계. 한국어 산문, 기존 톤 유지.
+**Verify:** 링크·명령 정확, build/smoke 무관 그린.
+**Dep:** A–D · **Scope:** M
+
+## Risks & Mitigations
 | Risk | Impact | Mitigation |
 |---|---|---|
-| vitest 미실행(rollup native) | Med | smoke + MCP 스크립트로 대체(전부 env-independent) |
-| e2e가 또 false-green | High | confirm 반영을 hard-assert + 의도적 RED 재현으로 검증 |
-| FS-Access 자동화 불가 | Med | 파싱만 자동, 다이얼로그는 수동 레시피 분리·명시 |
-| 테스트가 `.blueprint` 오염 | Med | 임시 `UBP_STORE` 사용 |
+| 로컬 파일 동시 2-writer(웹+MCP) | High | rev-lock 모든 쓰기 + MCP mtime 재읽기 + 원자 swap + 머지 다이얼로그 |
+| 웹 클라우드 raw upsert가 confirm 게이트 우회 | High | TC2에서 rev-lock update로 격상, last-writer-wins 제거 |
+| File System Access Chrome/Edge 전용 | Med | 미지원 시 tier0 폴백 + 명시 안내. 다이얼로그는 수동 레시피 |
+| 신규 사용자 "데이터 어디?" 혼란 | High(사용자 명시) | 배지 자가설명 + 온보딩 + 분기/ migrate 확인, 침묵 전환 금지 |
+| 핸들 권한 만료(재로드) | Med | IndexedDB 핸들 + queryPermission 재확보 1클릭 |
+| Supabase 키 포맷 함정(sb_publishable_*) | Med | legacy anon JWT 권장 안내(메모리: Supabase 키 함정) |
 
-## Open Questions / 범위 밖
-- Supabase/postgres/turso 어댑터 + REST 서버 하드닝 = **SaaS 경로, 이번 패스 제외**(MCP-로컬과 무관). 추후 SaaS 배포 시 별도 패스.
-- vitest 복구(`npm run repair`) — best-effort, 차단 요인 아님.
+## 범위 밖 / 영원 배제
+- 산출물 자체 렌더(pptx/PRD/이미지), touch/drawing — UBP 본질 외.
+- 상시 HTTP 서버 강제(`src/server`는 선택적 멀티유저 경로로 유지, 이번 필수 아님).
+- postgres/turso backend 신규 작업(존재만 유지).
+
+## Open Questions (구현 착수 전 사용자 확인)
+1. tier0(설정 없을 때 localStorage 기본) 유지가 맞나? — "html만 열면 됨" 보존 가정.
+2. 옵션2 폴더 연결 대상: **프로젝트 루트**를 고르게 하고 그 안 `.blueprint/bp.json`을 찾거나 생성하는 방식이 맞나? (MCP `UBP_STORE`와 같은 파일을 가리켜야 공유됨)
+3. 옵션3 웹 쓰기 인증: 브라우저는 anon 키(RLS 따름) 가정. service_role 키를 브라우저에 두는 건 금지(노출 위험). RLS 정책/스키마(supabase.sql) 적용을 사용자가 수행하는 전제가 맞나?

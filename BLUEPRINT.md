@@ -173,6 +173,44 @@ smoke.mjs                # 환경 자가검증
 }
 ```
 
+### 저장 3티어 모델 — tier0(이 브라우저) / 옵션2(로컬 파일) / 옵션3(클라우드)
+
+웹·MCP 가 같은 blueprint 를 공유하는 방식은 **설정 존재로 자동 결정**된다. 활성 티어는 항상
+헤더 배지로 보이며(⚪/🔵/🟢) 침묵 전환·침묵 덮어쓰기는 없다(rev-lock + 분기 다이얼로그).
+
+| 티어 | 배지 | 저장 위치 | 웹↔MCP 공유 | 활성 조건 | 동시성 안전 |
+|---|---|---|---|---|---|
+| **tier0 (LOCAL)** | ⚪ 이 브라우저 | 브라우저 localStorage | ✗ (이 브라우저만) | 기본 폴백 | n/a (단일) |
+| **옵션2 (FILE)** | 🔵 로컬 파일 | `.blueprint/bp.json` (+ `pos.json`) | ✓ 같은 PC | 폴더 연결(제스처) | rev-lock(파일 재읽기) |
+| **옵션3 (CLOUD)** | 🟢 클라우드 | Supabase `blueprints` 행 | ✓ 여러 기기 | Supabase URL+anon key 설정 | rev-lock(조건부 PATCH) + Realtime |
+
+우선순위(resolveStore): **Supabase 설정 → CLOUD ▸ 폴더 핸들 → FILE ▸ 그 외 → LOCAL.**
+- 옵션2: 웹은 File System Access 로 프로젝트 루트를 연결, MCP 는 `UBP_STORE` 를 그 `.blueprint/bp.json`
+  으로 맞춘다. `bp.json` 은 MCP 와 동일 Blueprint(좌표 제외) — 좌표는 사이드카 `pos.json`.
+- 옵션3: 웹은 anon 키로 PostgREST upsert/PATCH(RLS), MCP 는 `UBP_BACKEND=supabase`. `bp` 컬럼은
+  MCP 와 동일 Blueprint, 좌표는 웹 전용 `pos` 컬럼(MCP 무시). 스키마는 `src/server/storage/supabase.sql`.
+
+#### 셋업 매트릭스
+
+| 하고 싶은 것 | 웹 설정 | MCP env | 사전 작업 |
+|---|---|---|---|
+| 이 브라우저에서만 | (없음) | `UBP_STORE` | 없음 |
+| 같은 PC 의 MCP 와 공유 | 배지 → "폴더 연결" | `UBP_STORE`=연결 폴더 `.blueprint/bp.json` | 없음 |
+| 여러 기기·클라우드 공유 | 저장·백엔드 탭 → Supabase URL/anon key + 워크스페이스 ID | `UBP_BACKEND=supabase` + `SUPABASE_URL`/`SUPABASE_ANON_KEY`(또는 service) + `UBP_WORKSPACE_ID`(웹과 동일) | `supabase.sql` 적용 |
+
+### MCP 환경 변수 표
+
+| 변수 | 기본값 | 효과 |
+|---|---|---|
+| `UBP_STORE` | `.blueprint/bp.json` | filesystem 백엔드 BP 경로 (옵션2 공유 키) |
+| `UBP_POLICY` | `BLUEPRINT.md` | 정책 문서 경로 (핫리로드) |
+| `UBP_BACKEND` | `filesystem` | 저장 백엔드 — `filesystem`\|`supabase`\|`postgres`\|`turso` |
+| `UBP_WORKSPACE_ID` | `default` | 옵션3 워크스페이스 격리 키 — **웹 워크스페이스 ID 와 동일해야 공유됨** |
+| `SUPABASE_URL` | — | `UBP_BACKEND=supabase` 시 필수 |
+| `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | — | Supabase 인증 키 (RLS 적용 시 anon, 서버 신뢰 시 service) |
+
+`UBP_BACKEND` 미설정 시 filesystem 으로 동작하므로 기존 옵션2/단일 사용자 셋업은 무회귀.
+
 ### 자가 점검 체크리스트
 
 - [ ] `npm run build` 그린

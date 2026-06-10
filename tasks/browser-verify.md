@@ -138,3 +138,110 @@ agent-browser --session-name ubp-debug eval "
 
 ### 수동 레시피 (자동화 불가)
 - **anchor 디렉토리 스캔**: 우상단 "Anchor" 버튼 → `showDirectoryPicker` (user-gesture). 프로젝트 폴더 선택 시 `// @ubp-anchor: #nodeId` 마커 → file 노드 + `traces-to` propose 큐 (Confirm Gate). `ANCHOR_SCAN_EXTS`(.ts/.py/.md 등) + `ANCHOR_SCAN_IGNORE`(node_modules/.git/dist…) 적용, 파일당 2MB 상한.
+
+---
+
+## TB — 옵션2 FileStore (웹↔MCP `.blueprint/bp.json` 공유)  ✅ 2026-06-10
+
+### TB-auto. FileStore 로직 (mock FS 핸들로 결정적 검증)
+`showDirectoryPicker` 다이얼로그는 자동화 불가 → makeFileStore 가 쓰는 API 표면
+(`getFileHandle({create})`·`getFile().text()`·`createWritable({keepExistingData})`→`write/seek/close`·
+`getDirectoryHandle`·`entries()`·`removeEntry`)만 in-memory mock 으로 구현해 load/save/rev-lock/pull 검증.
+재현 스크립트는 git 히스토리(이 커밋 메시지) 참조. **실측 결과:**
+```json
+{"l0_empty":true,"l1_rev":1,"l1_pos":10,"l2_rev":2,"l2_nodes":2,
+ "snap_files":["bp.json","pos.json","audit.jsonl","r00001-5c4c1e9a44b7.json"],
+ "audit_lines":2,"conflictFired":true,"afterConflict_rev":9,"pulled_rev":9}
+```
+- 빈 폴더 → `bp:null`. save→load 라운드트립 무손실(rev·pos 사이드카).
+- `bp.json` 은 Blueprint 객체만(MCP 호환). 좌표는 `pos.json` 분리. `snapshots/r#####-<sha>.json` + `audit.jsonl` append.
+- **rev-lock**: 디스크가 외부에서 rev9 로 바뀐 뒤 save → `onFileConflict` 발화, 디스크 rev9 유지(침묵 덮어쓰기 0). ← 1급 요구.
+- **pull()**: 외부 rev9 변경 감지 후 반환.
+
+### TB-mcp. MCP 외부 재읽기 (TB3, node e2e)
+`dist/store.js` 로 store 생성 → 외부에서 파일을 rev5+노드로 덮어쓰고 `utimes` 로 mtime 미래화 →
+`get()`/`propose()`/`confirm()` 검증. **실측:** `get().rev=5`·`n_ext` 반영, `propose.baseRev=5`,
+`confirm.rev=6` (낙관락이 외부 writer 도 포착). `npm run build` EXIT0 + `node smoke.mjs` 24/24.
+
+### 수동 레시피 (자동화 불가 — 통과 위장 금지)
+1. **폴더 연결**: 콘솔/배지에서 `connectProjectFolder()` → `showDirectoryPicker` (user-gesture)로 프로젝트 루트 선택.
+   `.blueprint/` 자동 생성, `bp.json`/`pos.json` 쓰기. 빈 폴더면 현재 작업 시드, 기존 BP 있으면 로드(`syncAfterConnect`).
+2. **핸들 영속 + 권한 재확보**: 새로고침 → `restoreFileStoreFromIdb()` 가 IndexedDB(`ubp_fs_handles`)에서 루트 핸들 복원.
+   `queryPermission` granted 면 자동 FILE 복원, 아니면 `_fileNeedsReconnect=true`(배지가 `reacquireFilePermission()` 유도).
+3. **웹↔MCP 양방향**: `.mcp.json` 의 `UBP_STORE` 를 연결 폴더의 `.blueprint/bp.json` 으로 맞춤. 웹 저장 → MCP `get` 이
+   재읽기. MCP `confirm` → 웹 `_filePollTick`(4초/focus/visibility) 이 `pull` 로 반영. 미저장 편집 중이면 클로버 보류.
+4. **rev 충돌**: 양쪽이 같은 base 에서 동시 편집 → 웹 save 시 `onFileConflict`(미주입 시 toast)로 보류. 새로고침 재동기화.
+   (rev 번호 충돌 — 양측이 같은 rev 번호에 다른 내용 — 은 알려진 한계. 머지 다이얼로그는 TD3.)
+
+---
+
+## TD — 저장 위치 배지·패널·분기 UX (혼란 방지)  ✅ 2026-06-10
+
+### TD-auto. 배지 3-상태 + 패널 + 분기 다이얼로그 (자동)
+```bash
+agent-browser --session-name ubp-debug eval "
+(function(){
+  const out={};
+  openStorePanel();
+  const pb=document.getElementById('store-panel-body').innerHTML;
+  out.panel_open=document.getElementById('store-panel').open;
+  out.panel_has_connectBtn=pb.includes('폴더 연결'); out.panel_has_supaBtn=pb.includes('Supabase 설정');
+  document.getElementById('store-panel').close();
+  const saved=activeStore;
+  activeStore=makeFileStore({},'MyProj'); updateStoreBadge();
+  const b=document.getElementById('store-badge');
+  out.file_class=b.className; out.file_icon=b.firstChild.nodeValue.trim();
+  _fileNeedsReconnect=true; updateStoreBadge(); out.reconnect_class=b.className; _fileNeedsReconnect=false;
+  activeStore=saved; updateStoreBadge(); out.restored_class=b.className;
+  showDivergenceDialog({diskRev:9,localRev:3,disk:{meta:{rev:9}}});
+  out.diverge_body=document.getElementById('store-divergence-body').innerHTML.includes('rev 9');
+  resolveDivergence('cancel'); out.diverge_closed=!document.getElementById('store-divergence').open;
+  return JSON.stringify(out);
+})()
+"
+```
+**기대:** `panel_open:true`, `panel_has_connectBtn/supaBtn:true`, `file_class:"store-badge tier-file"`·`file_icon:"🔵"`,
+`reconnect_class` 에 `needs-attn` 포함, `restored_class:"store-badge tier-local"`, `diverge_body:true`, `diverge_closed:true`.
+스크린샷: `tasks/td-store-badge.png` (헤더 "⚪ 이 브라우저만" 배지 — rev pill 옆).
+
+### 수동 레시피 (자동화 불가)
+- **배지→폴더 연결→🔵 전환**: 배지 클릭 → 패널 "폴더 연결" → `showDirectoryPicker`(제스처) → 배지가 🔵 로컬 파일로 갱신, label 에 폴더명.
+- **충돌 시 분기**: 웹·MCP 동시 편집으로 rev 어긋남 → 웹 저장 시 분기 다이얼로그 → "디스크 불러오기"/"내 버전 덮어쓰기"/"취소" 중 사용자 선택(침묵 덮어쓰기 0).
+- **해제 마이그레이션**: 패널 "폴더 연결 해제" → LocalStore 전환, 현재 BP 가 localStorage 에도 시드됨(파일은 그대로). 배지 ⚪ 복귀.
+
+---
+
+## TC — 옵션3 CloudStore (웹↔MCP Supabase 공유)  ✅ 2026-06-10
+
+### TC-auto. CloudStore 로직 (mock Supabase fetch 로 결정적 검증)
+실 Supabase 자격증명/네트워크 없이 `window.fetch` 를 in-memory `blueprints` 단일 행 + `bp_bump_rev`
+트리거 근사(bp 변경 시 rev++)·조건부 PATCH(`rev=eq.X` 불일치 시 0행)로 스텁해 makeCloudStore
+load/save/rev-lock/pull 검증. 재현 스크립트는 git 히스토리(이 커밋) 참조. **실측:**
+```json
+{"insert_rev":1,"conflictFired":true,"noOverwrite":true,"forceMine_rev":8,"forceMine_nodes":9}
+```
+- 빈 테이블 → `bp:null`. 최초 save→insert(rev1), load 라운드트립 무손실(bp+pos 사이드카 컬럼).
+- 정상 save(bp 변경) → 트리거 rev++ → lastRev 동기.
+- **rev-lock**: 외부가 rev 를 7 로 바꾼 뒤 save → `onCloudConflict`(=showDivergenceDialog, tier=cloud) 발화,
+  원격 rev7 유지(침묵 덮어쓰기 0). ← 1급 요구. force-mine(`_setLastDiskRev(7)`) 후 save 는 통과(rev8).
+- **pull()**: 외부 rev 변경 감지 후 반환, 변경 없으면 null.
+
+### TC-ui. CLOUD 티어 배지·패널·분기 (자동)
+**실측:** `resolve_cloud:true`(Supabase 설정 → CLOUD 우선), `badge_class:"store-badge tier-cloud"`·icon `🟢`·
+label `"클라우드 · wsZ"`, 패널에 "클라우드 연결 해제" 버튼, 분기 다이얼로그 클라우드 문구(`rev 12`,
+`.blueprint/bp.json` 미포함). 스크린샷: `tasks/tc-cloud-badge.png`.
+
+### TC-mcp. MCP createStorage 전환 (무회귀)
+`src/mcp-server.ts` 가 `new BlueprintStore` → `await createStorage(ubpSelf)` (top-level await).
+`UBP_BACKEND` 미설정 → filesystem(UBP_STORE 보존). **실측:** MCP 부팅 시
+`[ubp] storage backend: filesystem` 로그, `npm run build` EXIT0 + `node smoke.mjs` 24/24.
+
+### 수동 레시피 (자동화 불가 — 통과 위장 금지)
+1. **스키마 적용**: `src/server/storage/supabase.sql` 을 Supabase SQL editor 에 붙여넣기(`blueprints.pos jsonb` 컬럼 포함).
+2. **웹 CLOUD 활성**: 설정 → 저장·백엔드 → Supabase URL/anon key + 워크스페이스 ID 입력 → 새로고침 시
+   `activateCloudStore()` 자동 활성(배지 🟢). 또는 배지 패널 "클라우드로 전환".
+3. **웹↔MCP 양방향**: MCP 를 `UBP_BACKEND=supabase` + 동일 `SUPABASE_URL`/`SUPABASE_ANON_KEY`(또는 service)
+   + **`UBP_WORKSPACE_ID` = 웹 워크스페이스 ID** 로 기동. 웹 저장 → MCP `get` 반영, MCP `confirm` → 웹
+   Realtime(postgres_changes) 또는 8초 폴링이 `pull` 로 반영.
+4. **rev 충돌**: 양측 동시 편집 → 웹 save 시 조건부 PATCH 0행 → 분기 다이얼로그(클라우드/내 버전/취소).
+   Realtime websocket 은 anon 키·RLS·`supabase_realtime` publication 의존 → 실 네트워크 수동 확인.

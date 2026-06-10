@@ -7,6 +7,7 @@ import {
   readdirSync,
   appendFileSync,
   unlinkSync,
+  statSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -88,6 +89,8 @@ export class BlueprintStore {
   private snapshotDir?: string;
   private authz?: Required<AuthzPolicy>;
   private bus = new EventEmitter();
+  /** 마지막으로 읽거나 쓴 파일 mtime(ms). 외부(웹 FileStore 등) 변경 감지용. */
+  private lastMtimeMs?: number;
 
   /** SSE 등 외부 listener 가 구독. unsubscribe 함수를 반환. */
   on(handler: (e: StoreEvent) => void): () => void {
@@ -131,7 +134,30 @@ export class BlueprintStore {
     this.persist();
   }
 
+  /**
+   * 외부 writer(웹 FileStore·다른 프로세스)가 파일을 바꿨으면 메모리 BP 를 갱신.
+   * mtime 비교로 변경 시에만 재파싱. 우리 자신의 persist() 는 mtime 을 갱신하므로 재읽기 안 함.
+   * 파싱 실패/파일 없음 시 메모리 BP 유지(치명적이지 않게).
+   */
+  private reloadIfChanged(): void {
+    if (!this.path) return;
+    try {
+      const st = statSync(this.path);
+      if (this.lastMtimeMs === undefined || st.mtimeMs > this.lastMtimeMs) {
+        const parsed = JSON.parse(readFileSync(this.path, "utf8")) as Blueprint;
+        if (parsed && parsed.nodes && parsed.edges && parsed.meta) {
+          this.bp = parsed;
+          if (!this.bp.meta.rev) this.bp.meta.rev = 1;
+        }
+        this.lastMtimeMs = st.mtimeMs;
+      }
+    } catch {
+      /* 파일 없음/파싱 실패 — 메모리 유지 */
+    }
+  }
+
   get(): Blueprint {
+    this.reloadIfChanged();
     return this.bp;
   }
 
@@ -153,6 +179,7 @@ export class BlueprintStore {
     try {
       writeFileSync(tmp, JSON.stringify(this.bp, null, 2), "utf8");
       renameSync(tmp, this.path);
+      try { this.lastMtimeMs = statSync(this.path).mtimeMs; } catch { /* ignore */ }
     } catch (e) {
       // persist 실패는 치명적이지 않게 stderr 로만 — 메모리 상 BP 유지
       console.error(`[ubp] persist 실패(메모리 유지): ${(e as Error).message}`);
@@ -241,6 +268,7 @@ export class BlueprintStore {
     intent: string,
     opts: { actor?: string | Actor; baseRev?: number } = {},
   ): PendingProposal {
+    this.reloadIfChanged(); // 외부 변경 반영 후 baseRev 캡처
     const actorObj: Actor | undefined =
       typeof opts.actor === "object" ? opts.actor : undefined;
     const actor = actorObj ? actorObj.id : (opts.actor as string | undefined) ?? "agent";
@@ -297,6 +325,7 @@ export class BlueprintStore {
   confirm(proposalId: string, opts: { actor?: string | Actor } = {}): ConfirmResult | null {
     const p = this.pending.get(proposalId);
     if (!p) return null;
+    this.reloadIfChanged(); // 외부 변경 반영 → baseRev 낙관락이 외부 writer 도 잡도록
     const actorObj: Actor | undefined =
       typeof opts.actor === "object" ? opts.actor : undefined;
     const actor = actorObj ? actorObj.id : (opts.actor as string | undefined) ?? "user";

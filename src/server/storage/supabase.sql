@@ -26,13 +26,17 @@ create table if not exists memberships (
 create index if not exists idx_memberships_user on memberships(user_id);
 
 -- blueprints: workspace 당 1개. 본체는 jsonb (의미 그래프).
+-- pos: 웹 전용 노드 좌표 사이드카 (MCP 는 무시 — bp 는 MCP 와 동일 Blueprint 유지).
 create table if not exists blueprints (
   workspace_id  text primary key references workspaces(id) on delete cascade,
   bp            jsonb not null,
+  pos           jsonb,
   rev           int not null default 1,
   updated_at    timestamptz not null default now(),
   updated_by    uuid references auth.users(id)
 );
+-- 기존 배포 호환: pos 컬럼 추가 (이미 있으면 무시).
+alter table blueprints add column if not exists pos jsonb;
 
 -- pending_proposals: confirm gate 대기열
 create table if not exists pending_proposals (

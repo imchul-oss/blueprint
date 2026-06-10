@@ -239,6 +239,17 @@
     border-radius: var(--r-sm);
     background: var(--line); color: var(--muted);
   }
+  #header .brand .store-badge {
+    font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: var(--r-sm);
+    border: 1px solid var(--panel-border); background: var(--bg-elev);
+    cursor: pointer; display: inline-flex; align-items: center; gap: 4px; line-height: 1.2;
+  }
+  #header .brand .store-badge:hover { filter: brightness(1.08); }
+  #header .brand .store-badge.tier-cloud { border-color: #2ea043; color: #2ea043; }
+  #header .brand .store-badge.tier-file  { border-color: #3b82f6; color: #3b82f6; }
+  #header .brand .store-badge.tier-local { border-color: var(--panel-border); color: var(--muted); }
+  #header .brand .store-badge.needs-attn { border-color: var(--warn); color: var(--warn); }
+  #header .brand #save-indicator { font-size: 10.5px; color: var(--muted); }
   .actions-row { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
   .actions-row .sep { width: 1px; height: 20px; background: var(--panel-border); margin: 0 var(--s-1); }
 
@@ -1332,6 +1343,8 @@
     <span class="logo"><svg class="ic" style="stroke:white"><use href="#i-layout"/></svg></span>
     UBP Whiteboard
     <span class="version" id="rev-pill">rev 1</span>
+    <button class="store-badge tier-local" id="store-badge" onclick="openStorePanel()" aria-label="저장 위치">⚪ <span id="store-badge-label">이 브라우저</span></button>
+    <span id="save-indicator"></span>
   </div>
   <div class="actions-row">
     <button class="icon" onclick="openSearchModal()" data-tooltip="검색 · 바꾸기 · 명령 팔레트&#10;⌘F 검색·일괄 바꾸기 · ⌘K 빠른 액션 실행" aria-label="검색 · 바꾸기 · 명령 팔레트">
@@ -1361,7 +1374,7 @@
     <button class="icon" onclick="newBlueprint()" data-tooltip="새 블루프린트&#10;빈 캔버스로 새로 시작" aria-label="새 블루프린트">
       <svg class="ic"><use href="#i-plus-square"/></svg>
     </button>
-    <button class="icon" onclick="saveBP({snapshot:true,cloud:!!(UI.supabaseUrl&&UI.supabaseAnonKey)})" data-tooltip="저장&#10;로컬 저장 + Supabase 설정 시 클라우드 동시" aria-label="저장">
+    <button class="icon" onclick="saveBP({snapshot:true})" data-tooltip="저장&#10;활성 저장소(배지)에 스냅샷 저장" aria-label="저장">
       <svg class="ic"><use href="#i-save"/></svg>
     </button>
     <button class="icon" onclick="openSnapshotPicker()" data-tooltip="스냅샷&#10;최근 자동 저장 10개에서 복구" aria-label="스냅샷">
@@ -2135,6 +2148,30 @@
   </div>
 </div>
 
+<!-- 저장 위치 패널 (배지 클릭) -->
+<dialog id="store-panel" aria-label="저장 위치">
+  <div style="padding:var(--s-4);min-width:420px;max-width:520px;">
+    <h4 style="margin:0 0 var(--s-2);">저장 위치</h4>
+    <div id="store-panel-body" style="font-size:12.5px;line-height:1.6;"></div>
+    <div style="display:flex;gap:var(--s-2);justify-content:flex-end;margin-top:var(--s-4);">
+      <button onclick="document.getElementById('store-panel').close()">닫기</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 분기(충돌) 다이얼로그 — 침묵 덮어쓰기 금지 -->
+<dialog id="store-divergence" aria-label="저장 충돌">
+  <div style="padding:var(--s-4);min-width:440px;max-width:560px;">
+    <h4 style="margin:0 0 var(--s-2);color:var(--warn);">저장 충돌 — 외부에서 파일이 변경됨</h4>
+    <div id="store-divergence-body" style="font-size:12.5px;line-height:1.6;"></div>
+    <div style="display:flex;gap:var(--s-2);justify-content:flex-end;margin-top:var(--s-4);flex-wrap:wrap;">
+      <button onclick="resolveDivergence('cancel')">취소</button>
+      <button onclick="resolveDivergence('load-disk')">디스크 버전 불러오기<br><span style="font-size:10px;font-weight:400;">(내 변경 버림)</span></button>
+      <button class="primary" onclick="resolveDivergence('force-mine')">내 버전으로 덮어쓰기<br><span style="font-size:10px;font-weight:400;">(외부 변경 버림)</span></button>
+    </div>
+  </div>
+</dialog>
+
 <!-- Toast -->
 <div id="toast-container"></div>
 
@@ -2229,45 +2266,628 @@ const SNAPSHOT_MAX = 10;
 let _autosaveTimer = null;
 let _lastSavedAt = null;
 
+// =================== STORE ADAPTER (단일 진실원천 추상화) ===================
+// 3 티어 — 설정 존재로 자동 결정:
+//   LOCAL : localStorage (이 브라우저만, 기본 폴백)
+//   FILE  : File System Access → .blueprint/bp.json (웹↔MCP 로컬 공유)  [Phase B]
+//   CLOUD : Supabase blueprints 행 (웹↔MCP 멀티기기 공유)              [Phase C]
+// 활성 store 는 항상 정확히 하나만 authoritative. 동시 이중 쓰기 금지.
+const StoreTier = { LOCAL: "local", FILE: "file", CLOUD: "cloud" };
+let _bpDirHandle = null; // FILE 티어용 디렉토리 핸들 (Phase B 에서 설정)
+
+// LocalStore — 기존 localStorage 동작 1:1 (무회귀 기준선).
+function makeLocalStore() {
+  return {
+    tier: StoreTier.LOCAL,
+    info() { return { tier: StoreTier.LOCAL, label: "이 브라우저만", icon: "⚪", shared: false }; },
+    load() {
+      const out = { bp: null, pos: null };
+      try {
+        const raw = localStorage.getItem(LS_BP_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.nodes && parsed.edges) out.bp = parsed;
+        }
+        const rawPos = localStorage.getItem(LS_BP_POS_KEY);
+        if (rawPos) {
+          const parsedPos = JSON.parse(rawPos);
+          if (parsedPos && typeof parsedPos === "object") out.pos = parsedPos;
+        }
+      } catch (e) {
+        console.warn("[UBP] LocalStore.load failed:", e.message);
+      }
+      return out;
+    },
+    save(bp, posObj, opts = {}) {
+      const bpJson = JSON.stringify(bp);
+      localStorage.setItem(LS_BP_KEY, bpJson);
+      localStorage.setItem(LS_BP_POS_KEY, JSON.stringify(posObj));
+      if (opts.snapshot) {
+        const snaps = loadSnapshotsRaw();
+        snaps.unshift({ ts: Date.now(), rev: bp.meta?.rev || 1, title: bp.meta?.title || "BP", bp: bpJson, pos: JSON.stringify(posObj) });
+        while (snaps.length > SNAPSHOT_MAX) snaps.pop();
+        localStorage.setItem(LS_SNAPSHOTS_KEY, JSON.stringify(snaps));
+      }
+      _lastSavedAt = Date.now();
+      updateSaveIndicator();
+    },
+    subscribe() { return () => {}; }, // 원격 없음
+  };
+}
+
+// =================== FILE STORE (Phase B — 웹↔MCP 로컬 파일 공유) ===================
+// .blueprint/bp.json 을 MCP(UBP_STORE)와 공유. bp.json 은 MCP 와 동일 포맷(Blueprint
+// 객체 그대로) 유지 → 좌표는 오염 방지 위해 사이드카 pos.json 로 분리.
+// 쓰기 디시플린: rev-lock(외부 변경 감지 시 덮어쓰기 금지) + createWritable 원자 쓰기
+// + audit.jsonl append + snapshots/r#####-<sha>.json (최근 50).
+const FILE_BP_NAME = "bp.json";
+const FILE_POS_NAME = "pos.json";
+const FILE_AUDIT_NAME = "audit.jsonl";
+const FILE_SNAP_DIRNAME = "snapshots";
+const FILE_SNAP_MAX = 50;
+const IDB_HANDLE_DB = "ubp_fs_handles";
+const IDB_HANDLE_STORE = "handles";
+
+let _bpRootHandle = null;        // 프로젝트 루트 디렉토리 핸들
+let _fileNeedsReconnect = false; // 재로드 후 권한 재확보 필요 플래그 (배지가 소비)
+let onFileConflict = null;       // TB4/TD3 머지 다이얼로그가 주입. null 이면 toast 만.
+
+function openHandleIdb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_HANDLE_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_HANDLE_STORE)) db.createObjectStore(IDB_HANDLE_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function handleIdbPut(key, val) {
+  const db = await openHandleIdb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_HANDLE_STORE, "readwrite");
+    tx.objectStore(IDB_HANDLE_STORE).put(val, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function handleIdbGet(key) {
+  const db = await openHandleIdb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_HANDLE_STORE, "readonly");
+    const req = tx.objectStore(IDB_HANDLE_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function sha256hex12(str) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+}
+
+// .blueprint 디렉토리 핸들을 받아 FileStore 어댑터 생성.
+function makeFileStore(bpDir, rootName) {
+  let lastDiskRev = null; // 마지막으로 디스크에서 관측/기록한 rev (rev-lock 기준)
+
+  async function readJson(name) {
+    try {
+      const fh = await bpDir.getFileHandle(name);
+      const file = await fh.getFile();
+      const txt = await file.text();
+      return txt.trim() ? JSON.parse(txt) : null;
+    } catch (e) {
+      if (e && e.name === "NotFoundError") return null;
+      throw e;
+    }
+  }
+  async function writeJsonAtomic(name, obj) {
+    const fh = await bpDir.getFileHandle(name, { create: true });
+    const w = await fh.createWritable(); // 임시 swap 파일 → close 시 원자 커밋
+    await w.write(JSON.stringify(obj, null, 2));
+    await w.close();
+  }
+  async function appendAudit(entry) {
+    try {
+      const fh = await bpDir.getFileHandle(FILE_AUDIT_NAME, { create: true });
+      const existing = await fh.getFile();
+      const w = await fh.createWritable({ keepExistingData: true });
+      await w.seek(existing.size);
+      await w.write(JSON.stringify(entry) + "\n");
+      await w.close();
+    } catch (e) { console.warn("[UBP] audit append 실패:", e.message); }
+  }
+  async function writeSnapshot(bp) {
+    try {
+      const snapDir = await bpDir.getDirectoryHandle(FILE_SNAP_DIRNAME, { create: true });
+      const rev = bp.meta?.rev || 1;
+      const sha = await sha256hex12(JSON.stringify(bp));
+      const fname = `r${String(rev).padStart(5, "0")}-${sha}.json`;
+      const fh = await snapDir.getFileHandle(fname, { create: true });
+      const w = await fh.createWritable();
+      await w.write(JSON.stringify({ rev, sha, ts: Date.now(), actor: "web", bp }, null, 2));
+      await w.close();
+      // prune: 이름 정렬 후 초과분 삭제
+      const names = [];
+      for await (const [n, h] of snapDir.entries()) { if (h.kind === "file" && n.endsWith(".json")) names.push(n); }
+      names.sort();
+      const excess = names.length - FILE_SNAP_MAX;
+      for (let i = 0; i < excess; i++) { try { await snapDir.removeEntry(names[i]); } catch {} }
+      return sha;
+    } catch (e) { console.warn("[UBP] snapshot 실패:", e.message); return ""; }
+  }
+
+  return {
+    tier: StoreTier.FILE,
+    info() { return { tier: StoreTier.FILE, label: `로컬 파일 · ${rootName || "폴더"}`, icon: "🔵", shared: true, detail: ".blueprint/bp.json" }; },
+    async load() {
+      const bp = await readJson(FILE_BP_NAME);
+      const pos = await readJson(FILE_POS_NAME);
+      if (bp && bp.meta) lastDiskRev = bp.meta.rev ?? 1;
+      return { bp: (bp && bp.nodes && bp.edges) ? bp : null, pos: (pos && typeof pos === "object") ? pos : null };
+    },
+    async save(bp, posObj, opts = {}) {
+      // rev-lock — 쓰기 직전 디스크 재확인. 외부(MCP/타 클라이언트)가 변경했으면 덮어쓰기 금지.
+      const disk = await readJson(FILE_BP_NAME);
+      const diskRev = disk && disk.meta ? (disk.meta.rev ?? 1) : null;
+      if (diskRev !== null && lastDiskRev !== null && diskRev !== lastDiskRev) {
+        const info = { diskRev, localRev: bp.meta?.rev ?? 1, disk };
+        if (typeof onFileConflict === "function") { onFileConflict(info); }
+        else { toast(`파일 충돌: 디스크 rev ${diskRev} ≠ 내 기준 ${lastDiskRev}. 외부 변경 감지 — 덮어쓰기 보류. (새로고침으로 재동기화)`, "error"); }
+        return; // 침묵 덮어쓰기 금지
+      }
+      await writeJsonAtomic(FILE_BP_NAME, bp);
+      await writeJsonAtomic(FILE_POS_NAME, posObj);
+      lastDiskRev = bp.meta?.rev ?? 1;
+      if (opts.snapshot) {
+        const sha = await writeSnapshot(bp);
+        await appendAudit({ ts: Date.now(), actor: "web", kind: "snapshot", rev: lastDiskRev, snapshotSha: sha });
+      } else {
+        await appendAudit({ ts: Date.now(), actor: "web", kind: "save", rev: lastDiskRev });
+      }
+      _lastSavedAt = Date.now();
+      updateSaveIndicator();
+    },
+    // 외부(폴링/포커스)에서 디스크 변경을 읽어 들일 때 사용. 변경 있으면 {bp,pos,rev} 반환, 없으면 null.
+    async pull() {
+      const bp = await readJson(FILE_BP_NAME);
+      if (!bp || !bp.meta) return null;
+      const diskRev = bp.meta.rev ?? 1;
+      if (lastDiskRev !== null && diskRev === lastDiskRev) return null; // 변경 없음
+      const pos = await readJson(FILE_POS_NAME);
+      lastDiskRev = diskRev;
+      return { bp: (bp.nodes && bp.edges) ? bp : null, pos: (pos && typeof pos === "object") ? pos : null, rev: diskRev };
+    },
+    _getLastDiskRev() { return lastDiskRev; },
+    _setLastDiskRev(r) { lastDiskRev = r; }, // TD3 force-mine: rev-lock 우회 후 강제 쓰기
+    subscribe() { return () => {}; }, // 파일 watch 는 폴링(TB4)으로 별도 처리
+  };
+}
+
+// 사용자 제스처로 프로젝트 루트 폴더 연결 → .blueprint/bp.json 공유 시작.
+async function connectProjectFolder() {
+  if (!window.showDirectoryPicker) {
+    toast("이 브라우저는 폴더 연결 미지원 (Chrome/Edge 필요). 이 브라우저 저장으로 계속됩니다.", "error");
+    return null;
+  }
+  let root;
+  try {
+    root = await window.showDirectoryPicker({ mode: "readwrite", id: "ubp-project-root" });
+  } catch { return null; } // 사용자 취소
+  let bpDir;
+  try {
+    bpDir = await root.getDirectoryHandle(".blueprint", { create: true });
+  } catch (e) {
+    toast("'.blueprint' 폴더 생성/접근 실패: " + e.message, "error");
+    return null;
+  }
+  _bpRootHandle = root;
+  _bpDirHandle = bpDir;
+  _fileNeedsReconnect = false;
+  try { await handleIdbPut("projectRoot", root); } catch (e) { console.warn("[UBP] 핸들 영속 실패:", e.message); }
+  activeStore = makeFileStore(bpDir, root.name);
+  toast(`폴더 연결됨: ${root.name}/.blueprint`, "ok");
+  await syncAfterConnect();
+  if (typeof updateStoreBadge === "function") updateStoreBadge();
+  if (typeof startFilePoll === "function") startFilePoll();
+  return bpDir;
+}
+
+// 재로드 시 IndexedDB 의 핸들로 FILE 티어 자동 복원 시도.
+//   true: 복원 완료(권한 granted) / "needs-permission": 핸들 있으나 제스처 필요 / false: 핸들 없음
+async function restoreFileStoreFromIdb() {
+  let root;
+  try { root = await handleIdbGet("projectRoot"); } catch { return false; }
+  if (!root) return false;
+  let perm = "prompt";
+  try { perm = await root.queryPermission({ mode: "readwrite" }); } catch {}
+  if (perm !== "granted") {
+    _bpRootHandle = root;
+    _fileNeedsReconnect = true; // 배지가 "재연결" 유도
+    return "needs-permission";
+  }
+  try {
+    const bpDir = await root.getDirectoryHandle(".blueprint", { create: true });
+    _bpRootHandle = root;
+    _bpDirHandle = bpDir;
+    _fileNeedsReconnect = false;
+    activeStore = makeFileStore(bpDir, root.name);
+    return true;
+  } catch (e) { console.warn("[UBP] FILE 복원 실패:", e.message); return false; }
+}
+
+// 권한 재확보(제스처 필요) — 배지의 "재연결" 버튼에서 호출.
+async function reacquireFilePermission() {
+  if (!_bpRootHandle) return connectProjectFolder();
+  let perm = "prompt";
+  try { perm = await _bpRootHandle.requestPermission({ mode: "readwrite" }); } catch {}
+  if (perm !== "granted") { toast("폴더 권한이 거부되어 이 브라우저 저장으로 유지됩니다.", "error"); return false; }
+  const bpDir = await _bpRootHandle.getDirectoryHandle(".blueprint", { create: true });
+  _bpDirHandle = bpDir;
+  _fileNeedsReconnect = false;
+  activeStore = makeFileStore(bpDir, _bpRootHandle.name);
+  toast(`폴더 재연결됨: ${_bpRootHandle.name}/.blueprint`, "ok");
+  return true;
+}
+
+// ============ TB4: 파일 폴링 — MCP/외부 변경을 웹에 반영 ============
+// FS Access 는 watch API 가 없어 폴링 + focus/visibility 트리거로 디스크 변경을 감지.
+// pull() 이 lastDiskRev 와 디스크 rev 를 비교 → 변경 시에만 반영(자기 쓰기 재반영 없음).
+let _filePollTimer = null;
+async function _filePollTick() {
+  if (!activeStore || activeStore.tier !== StoreTier.FILE || typeof activeStore.pull !== "function") return;
+  // 로컬 미저장 편집 중이면 자동 클로버 금지 — 알림만(머지는 TD3).
+  if (_autosaveTimer) return;
+  try {
+    const changed = await activeStore.pull();
+    if (changed && changed.bp) {
+      BP = changed.bp;
+      if (changed.pos) { for (const k of Object.keys(pos)) delete pos[k]; Object.assign(pos, changed.pos); }
+      selId = null; selectedEdgeId = null; _multiSel.clear();
+      normalizeAllPositions();
+      render();
+      document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+      toast(`외부 변경 반영 (rev ${changed.rev})`, "info");
+    }
+  } catch (e) { console.warn("[UBP] file poll 실패:", e.message); }
+}
+function startFilePoll() {
+  stopFilePoll();
+  _filePollTimer = setInterval(_filePollTick, 4000);
+  window.addEventListener("focus", _filePollTick);
+  document.addEventListener("visibilitychange", _onVisFilePoll);
+}
+function _onVisFilePoll() { if (!document.hidden) _filePollTick(); }
+function stopFilePoll() {
+  if (_filePollTimer) { clearInterval(_filePollTimer); _filePollTimer = null; }
+  window.removeEventListener("focus", _filePollTick);
+  document.removeEventListener("visibilitychange", _onVisFilePoll);
+}
+
+// =================== CLOUD STORE (Phase C — Supabase 웹↔MCP 멀티기기 공유) ===================
+// Supabase blueprints 행(workspace_id PK)을 MCP(UBP_BACKEND=supabase)와 공유.
+// bp 컬럼은 MCP 와 동일 Blueprint, 좌표는 pos 컬럼(웹 전용, MCP 무시)에 분리 저장.
+// 쓰기 디시플린: rev-lock 조건부 PATCH(rev=eq.<기준>) — 외부 변경 시 0행 갱신→충돌(덮어쓰기 금지).
+// 변경 전파: Supabase Realtime(postgres_changes) 구독 + 폴링 폴백.
+const SUPA_TABLE = "blueprints";
+let onCloudConflict = null;  // 클라우드 충돌 콜백 (TD3 다이얼로그 공유)
+let _cloudUnsub = null;      // Realtime 구독 해제 함수
+let _cloudPollTimer = null;  // 폴링 폴백 타이머
+
+function hasSupabaseConfig() {
+  return !!((UI.supabaseUrl || "").trim() && (UI.supabaseAnonKey || "").trim());
+}
+// 웹·MCP 가 동일 워크스페이스를 공유하도록 id 결정 (TC3).
+// 우선순위: 설정값 > BP.meta.workspaceId > BP.meta.id > "default" — MCP 의 UBP_WORKSPACE_ID 와 맞춤.
+function cloudWorkspaceId() {
+  return ((UI.workspaceId || "").trim()) || BP.meta?.workspaceId || BP.meta?.id || "default";
+}
+
+function makeCloudStore(url, key, wsId) {
+  let lastRev = null;
+  const H = () => ({ "apikey": key, "authorization": `Bearer ${key}`, "content-type": "application/json" });
+  const wsq = encodeURIComponent(wsId);
+  async function fetchRow() {
+    const res = await fetch(`${url}/rest/v1/${SUPA_TABLE}?workspace_id=eq.${wsq}&select=bp,pos,rev`, { headers: H() });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text()).slice(0,120)}`);
+    return (await res.json())[0] || null;
+  }
+  function fireConflict(remoteRev, bp, disk) {
+    const info = { tier: StoreTier.CLOUD, diskRev: remoteRev, localRev: bp.meta?.rev ?? 1, disk };
+    if (typeof onCloudConflict === "function") onCloudConflict(info);
+    else toast(`클라우드 충돌: 원격 rev ${remoteRev} ≠ 내 기준 ${lastRev} — 덮어쓰기 보류.`, "error");
+  }
+  return {
+    tier: StoreTier.CLOUD,
+    info() { return { tier: StoreTier.CLOUD, label: `클라우드 · ${wsId}`, icon: "🟢", shared: true, detail: `Supabase · ws ${wsId}` }; },
+    async load() {
+      const row = await fetchRow();
+      if (!row) { lastRev = null; return { bp: null, pos: null }; }
+      lastRev = row.rev ?? 1;
+      return { bp: (row.bp && row.bp.nodes && row.bp.edges) ? row.bp : null, pos: (row.pos && typeof row.pos === "object") ? row.pos : null };
+    },
+    async save(bp, posObj, opts = {}) {
+      const row = await fetchRow();
+      if (!row) {
+        // 최초 → insert (행 없음)
+        const res = await fetch(`${url}/rest/v1/${SUPA_TABLE}`, {
+          method: "POST",
+          headers: { ...H(), "prefer": "return=representation" },
+          body: JSON.stringify([{ workspace_id: wsId, bp, pos: posObj, rev: bp.meta?.rev || 1, updated_at: new Date().toISOString() }]),
+        });
+        if (!res.ok) throw new Error(`insert HTTP ${res.status} ${(await res.text()).slice(0,120)}`);
+        lastRev = (await res.json())[0]?.rev ?? (bp.meta?.rev || 1);
+      } else {
+        const remoteRev = row.rev ?? 1;
+        // rev-lock: 외부(MCP/타 기기) 변경 감지 시 덮어쓰기 금지.
+        if (lastRev !== null && remoteRev !== lastRev) { fireConflict(remoteRev, bp, row.bp); return; }
+        // 조건부 PATCH — rev 가 기준과 같은 행만 갱신(낙관락). bp 변경 시 트리거가 rev++.
+        const res = await fetch(`${url}/rest/v1/${SUPA_TABLE}?workspace_id=eq.${wsq}&rev=eq.${remoteRev}`, {
+          method: "PATCH",
+          headers: { ...H(), "prefer": "return=representation" },
+          body: JSON.stringify({ bp, pos: posObj, updated_at: new Date().toISOString() }),
+        });
+        if (!res.ok) throw new Error(`update HTTP ${res.status} ${(await res.text()).slice(0,120)}`);
+        const upd = await res.json();
+        if (!upd.length) { fireConflict(remoteRev, bp, row.bp); return; } // 경합으로 rev 바뀜
+        lastRev = upd[0]?.rev ?? remoteRev;
+      }
+      _lastSavedAt = Date.now();
+      updateSaveIndicator();
+    },
+    // 폴링/Realtime 콜백에서 원격 변경을 읽어 들일 때. 변경 있으면 {bp,pos,rev}, 없으면 null.
+    async pull() {
+      const row = await fetchRow();
+      if (!row) return null;
+      const remoteRev = row.rev ?? 1;
+      if (lastRev !== null && remoteRev === lastRev) return null;
+      lastRev = remoteRev;
+      return { bp: (row.bp && row.bp.nodes && row.bp.edges) ? row.bp : null, pos: (row.pos && typeof row.pos === "object") ? row.pos : null, rev: remoteRev };
+    },
+    _getLastDiskRev() { return lastRev; },
+    _setLastDiskRev(r) { lastRev = r; }, // TD3 force-mine: 낙관락 우회 후 강제 쓰기
+    // Supabase Realtime(Phoenix) websocket — postgres_changes 구독. 실패 시 폴링이 백업.
+    subscribe(cb) {
+      let sock = null, hb = null;
+      try {
+        const wsUrl = url.replace(/^http/, "ws") + `/realtime/v1/websocket?apikey=${encodeURIComponent(key)}&vsn=1.0.0`;
+        sock = new WebSocket(wsUrl);
+        const topic = `realtime:public:${SUPA_TABLE}`;
+        let ref = 0;
+        sock.onopen = () => {
+          sock.send(JSON.stringify({ topic, event: "phx_join", ref: String(++ref), payload: {
+            config: { postgres_changes: [{ event: "*", schema: "public", table: SUPA_TABLE, filter: `workspace_id=eq.${wsId}` }] },
+          }}));
+          hb = setInterval(() => { try { sock.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", ref: String(++ref), payload: {} })); } catch {} }, 25000);
+        };
+        sock.onmessage = (ev) => {
+          try { const m = JSON.parse(ev.data); if (m.event === "postgres_changes" && m.payload?.data) cb && cb(); } catch {}
+        };
+        sock.onerror = () => {}; // 폴링 폴백이 처리
+      } catch (e) { console.warn("[UBP] Realtime 구독 실패 — 폴링 폴백:", e.message); }
+      return () => { try { if (hb) clearInterval(hb); if (sock) sock.close(); } catch {} };
+    },
+  };
+}
+
+// Supabase 설정이 있으면 CLOUD 티어로 활성화 (제스처 불필요 — 설정 자체가 opt-in).
+async function activateCloudStore() {
+  if (!hasSupabaseConfig()) return false;
+  const url = (UI.supabaseUrl || "").trim(), key = (UI.supabaseAnonKey || "").trim();
+  stopFilePoll();
+  activeStore = makeCloudStore(url, key, cloudWorkspaceId());
+  try { await syncAfterConnect(); } catch (e) { toast("클라우드 동기화 실패: " + (e.message||e), "error"); }
+  if (typeof updateStoreBadge === "function") updateStoreBadge();
+  startCloudSync();
+  return true;
+}
+
+// ============ TC2: Realtime 구독 + 폴링 폴백 — MCP/타 기기 변경을 웹에 반영 ============
+async function _cloudPullApply() {
+  if (!activeStore || activeStore.tier !== StoreTier.CLOUD || typeof activeStore.pull !== "function") return;
+  if (_autosaveTimer) return; // 편집 중 자동 클로버 금지(머지는 TD3)
+  try {
+    const changed = await activeStore.pull();
+    if (changed && changed.bp) {
+      BP = changed.bp;
+      if (changed.pos) { for (const k of Object.keys(pos)) delete pos[k]; Object.assign(pos, changed.pos); }
+      selId = null; selectedEdgeId = null; _multiSel.clear();
+      normalizeAllPositions(); render();
+      document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+      toast(`클라우드 변경 반영 (rev ${changed.rev})`, "info");
+    }
+  } catch (e) { console.warn("[UBP] cloud pull 실패:", e.message); }
+}
+function _onVisCloudPoll() { if (!document.hidden) _cloudPullApply(); }
+function startCloudSync() {
+  stopCloudSync();
+  if (!activeStore || activeStore.tier !== StoreTier.CLOUD) return;
+  if (typeof activeStore.subscribe === "function") _cloudUnsub = activeStore.subscribe(_cloudPullApply);
+  _cloudPollTimer = setInterval(_cloudPullApply, 8000); // Realtime 끊겨도 안전망
+  window.addEventListener("focus", _cloudPullApply);
+  document.addEventListener("visibilitychange", _onVisCloudPoll);
+}
+function stopCloudSync() {
+  if (_cloudUnsub) { try { _cloudUnsub(); } catch {} _cloudUnsub = null; }
+  if (_cloudPollTimer) { clearInterval(_cloudPollTimer); _cloudPollTimer = null; }
+  window.removeEventListener("focus", _cloudPullApply);
+  document.removeEventListener("visibilitychange", _onVisCloudPoll);
+}
+
+// 클라우드 연결 해제 — 이 브라우저로 마이그레이션(클라우드 데이터는 유지).
+async function disconnectCloud() {
+  stopCloudSync();
+  activeStore = makeLocalStore();
+  activeStore.save(BP, pos, { snapshot: true });
+  updateStoreBadge();
+  document.getElementById("store-panel").close();
+  toast("클라우드 연결 해제 — 이 브라우저 저장으로 전환 (클라우드 데이터는 유지)", "ok");
+}
+
+// =================== TD1~TD5: 저장 위치 배지·패널·분기 UX ===================
+// 1급 요구: 활성 store 를 항상 눈에 보이게 + 자가설명. 침묵 전환·덮어쓰기 금지.
+function _storeBadgeTooltip(info) {
+  if (_fileNeedsReconnect) return "연결된 폴더의 권한이 만료됨&#10;클릭 → 재연결";
+  if (info.tier === StoreTier.CLOUD) return "클라우드 공유 (Supabase)&#10;다른 기기·MCP와 실시간 공유";
+  if (info.tier === StoreTier.FILE) return "로컬 파일 공유&#10;.blueprint/bp.json — 같은 PC의 MCP와 공유";
+  return "이 브라우저에만 저장&#10;클릭 → 폴더 연결로 MCP와 공유";
+}
+function updateStoreBadge() {
+  const badge = document.getElementById("store-badge");
+  const labelEl = document.getElementById("store-badge-label");
+  if (!badge || !labelEl) return;
+  const info = storeInfo();
+  badge.classList.remove("tier-cloud", "tier-file", "tier-local", "needs-attn");
+  badge.classList.add("tier-" + info.tier);
+  if (badge.firstChild && badge.firstChild.nodeType === 3) badge.firstChild.nodeValue = info.icon + " ";
+  if (_fileNeedsReconnect) { badge.classList.add("needs-attn"); labelEl.textContent = "폴더 재연결 필요"; }
+  else { labelEl.textContent = info.label; }
+  badge.setAttribute("data-tooltip", _storeBadgeTooltip(info));
+}
+
+function openStorePanel() {
+  const info = storeInfo();
+  const supa = !!((UI.supabaseUrl || "").trim() && (UI.supabaseAnonKey || "").trim());
+  let h = `<div style="padding:var(--s-3);background:var(--bg);border:1px solid var(--panel-border);border-radius:var(--r-sm);margin-bottom:var(--s-3);">`;
+  h += `<div style="font-size:14px;font-weight:600;">${info.icon} ${esc(_fileNeedsReconnect ? "폴더 재연결 필요" : info.label)}</div>`;
+  h += `<div style="color:var(--muted);font-size:11.5px;margin-top:2px;">${info.shared ? "MCP·다른 창과 공유됨" : "이 브라우저에만 저장 — 공유 안 됨"}${info.detail ? " · " + esc(info.detail) : ""}</div></div>`;
+  h += `<div style="font-size:11.5px;color:var(--muted);line-height:1.7;margin-bottom:var(--s-3);">`;
+  h += `⚪ <b>이 브라우저</b> — 설정 없이 즉시. 이 브라우저에만 저장.<br>`;
+  h += `🔵 <b>로컬 파일</b> — 폴더 연결 → <code>.blueprint/bp.json</code> 을 같은 PC의 MCP와 공유.<br>`;
+  h += `🟢 <b>클라우드</b> — Supabase 설정 시 여러 기기·MCP와 실시간 공유.</div>`;
+  h += `<div style="display:flex;flex-direction:column;gap:var(--s-2);">`;
+  if (_fileNeedsReconnect) {
+    h += `<button class="primary" onclick="reacquireFilePermission().then(()=>{updateStoreBadge();document.getElementById('store-panel').close();})">연결된 폴더 재연결</button>`;
+  }
+  // 🔵 폴더(FILE)
+  if (info.tier === StoreTier.FILE) {
+    h += `<button onclick="disconnectFolder()">폴더 연결 해제 (⚪ 이 브라우저로)</button>`;
+  } else if (info.tier !== StoreTier.CLOUD) {
+    h += `<button onclick="connectProjectFolder().then(r=>{if(r)document.getElementById('store-panel').close();})">폴더 연결 (🔵 로컬 파일 공유)</button>`;
+  }
+  // 🟢 클라우드(CLOUD)
+  if (info.tier === StoreTier.CLOUD) {
+    h += `<button onclick="disconnectCloud()">클라우드 연결 해제 (⚪ 이 브라우저로)</button>`;
+  } else if (supa) {
+    h += `<button class="primary" onclick="activateCloudStore().then(()=>document.getElementById('store-panel').close())">클라우드로 전환 (🟢 Supabase 공유)</button>`;
+  } else {
+    h += `<button onclick="document.getElementById('store-panel').close();openGeneralSettings();setTimeout(()=>switchGenSettingsTab('storage'),50);">Supabase 설정 (🟢 클라우드 공유)</button>`;
+  }
+  h += `</div>`;
+  document.getElementById("store-panel-body").innerHTML = h;
+  document.getElementById("store-panel").showModal();
+}
+
+// TD5: 폴더 해제 — 현재 작업을 이 브라우저로 마이그레이션(파일은 그대로 유지) 후 LocalStore 전환.
+async function disconnectFolder() {
+  stopFilePoll();
+  _bpDirHandle = null; _bpRootHandle = null; _fileNeedsReconnect = false;
+  try { await handleIdbPut("projectRoot", null); } catch {}
+  activeStore = makeLocalStore();
+  activeStore.save(BP, pos, { snapshot: true }); // 이 브라우저에 시드(마이그레이션)
+  updateStoreBadge();
+  document.getElementById("store-panel").close();
+  toast("폴더 연결 해제 — 이 브라우저 저장으로 전환 (파일은 그대로 유지)", "ok");
+}
+
+// TD3: 분기(충돌) 다이얼로그 — onFileConflict 에 주입. 침묵 덮어쓰기 절대 금지.
+let _pendingDivergence = null;
+function showDivergenceDialog(info) {
+  _pendingDivergence = info;
+  const isCloud = info.tier === StoreTier.CLOUD;
+  const where = isCloud ? "클라우드" : "디스크";
+  const src = isCloud ? "Supabase 클라우드" : "<code>.blueprint/bp.json</code>";
+  const who = isCloud ? "다른 기기나 MCP" : "MCP나 다른 창";
+  const target = isCloud ? "클라우드" : "파일";
+  document.getElementById("store-divergence-body").innerHTML =
+    `${where}의 <b>rev ${info.diskRev}</b> 가 내 작업 기준(<b>rev ${info.localRev}</b>)과 다릅니다. ` +
+    `${who}이(가) ${src} 을 바꿨을 수 있습니다.<br><br>` +
+    `• <b>${where} 버전 불러오기</b>: 외부 변경을 받아들이고 내 미저장 변경은 버립니다.<br>` +
+    `• <b>내 버전으로 덮어쓰기</b>: 외부 변경을 버리고 내 작업으로 ${target}을 덮어씁니다.<br><br>` +
+    `자동 머지는 하지 않습니다.`;
+  document.getElementById("store-divergence").showModal();
+}
+async function resolveDivergence(action) {
+  const info = _pendingDivergence; _pendingDivergence = null;
+  document.getElementById("store-divergence").close();
+  if (!info || action === "cancel") return;
+  if (action === "load-disk") {
+    await loadBP(); // 파일에서 재로드 + lastDiskRev 갱신
+    selId = null; selectedEdgeId = null; _multiSel.clear();
+    normalizeAllPositions(); render(); resetView();
+    document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+    toast(`디스크 버전 로드됨 (rev ${BP.meta?.rev})`, "ok");
+  } else if (action === "force-mine") {
+    if (typeof activeStore._setLastDiskRev === "function") activeStore._setLastDiskRev(info.diskRev);
+    BP.meta.rev = info.diskRev + 1; // rev 단조 유지
+    document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+    await saveBP({ snapshot: true });
+    toast("내 버전으로 덮어썼습니다", "ok");
+  }
+  updateStoreBadge();
+}
+onFileConflict = showDivergenceDialog;
+onCloudConflict = showDivergenceDialog;
+
+// 활성 store. init 에서는 항상 LocalStore 로 시작(빠른 복원·gesture 불필요).
+// FILE/CLOUD 로의 전환은 사용자 명시 연결(제스처)로만 일어난다. (Phase B/D)
+let activeStore = makeLocalStore();
+
+// 설정으로부터 *의도된* 티어를 순수 판정. 실제 activeStore 전환과 분리(배지·온보딩 참고용).
+// Supabase 설정 우선 → 파일 핸들 → 로컬.
+function resolveStore() {
+  const hasSupabase = !!((UI.supabaseUrl || "").trim() && (UI.supabaseAnonKey || "").trim());
+  if (hasSupabase) return StoreTier.CLOUD;
+  if (_bpDirHandle) return StoreTier.FILE;
+  return StoreTier.LOCAL;
+}
+
+// 배지·UI 가 소비하는 현재 store 메타.
+function storeInfo() { return activeStore.info(); }
+
 function saveBP(opts = {}) {
-  // opts.cloud=true → Supabase 도 시도 (best-effort, fail silent on missing creds)
+  // 단일 진실원천 — 활성 store 1개로만 저장(LOCAL/FILE/CLOUD). 클라우드 쓰기는
+  // CloudStore.save 가 rev-lock 으로 처리(TC2). 레거시 raw upsert 미러는 제거됨.
   // opts.snapshot=true → 스냅샷 큐에도 추가
   try {
-    const bpJson = JSON.stringify(BP);
-    localStorage.setItem(LS_BP_KEY, bpJson);
-    localStorage.setItem(LS_BP_POS_KEY, JSON.stringify(pos));
-    if (opts.snapshot) {
-      const snaps = loadSnapshotsRaw();
-      snaps.unshift({ ts: Date.now(), rev: BP.meta?.rev || 1, title: BP.meta?.title || "BP", bp: bpJson, pos: JSON.stringify(pos) });
-      while (snaps.length > SNAPSHOT_MAX) snaps.pop();
-      localStorage.setItem(LS_SNAPSHOTS_KEY, JSON.stringify(snaps));
+    const r = activeStore.save(BP, pos, opts);
+    if (r && typeof r.then === "function") {
+      r.catch(e => toast("저장 실패: " + (e.message || e), "error"));
     }
-    _lastSavedAt = Date.now();
-    updateSaveIndicator();
   } catch (e) {
     toast("로컬 저장 실패: " + e.message, "error");
-    return;
-  }
-  // 클라우드 (Supabase) — UI.supabaseUrl + anon key 가 설정되어 있을 때만 시도
-  if (opts.cloud) {
-    saveBPToCloud().catch(err => toast("클라우드 저장 실패: " + (err.message||err), "error"));
   }
 }
 
-function loadBP() {
+async function loadBP() {
   try {
-    const raw = localStorage.getItem(LS_BP_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.nodes && parsed.edges) BP = parsed;
-    }
-    const rawPos = localStorage.getItem(LS_BP_POS_KEY);
-    if (rawPos) {
-      const parsedPos = JSON.parse(rawPos);
-      if (parsedPos && typeof parsedPos === "object") Object.assign(pos, parsedPos);
-    }
+    let r = activeStore.load();
+    if (r && typeof r.then === "function") r = await r; // FILE/CLOUD 비동기 load
+    const { bp, pos: loadedPos } = r || {};
+    if (bp) BP = bp;
+    if (loadedPos) Object.assign(pos, loadedPos);
   } catch (e) {
     console.warn("[UBP] loadBP failed:", e.message);
+  }
+}
+
+// 폴더 연결 직후 동기화. 파일이 비어있으면 현재 작업으로 시드, 데이터가 있으면 그 파일을 진실원천으로 로드.
+// (양쪽 모두 의미있는 서로 다른 데이터인 머지 케이스는 TD3 다이얼로그 영역)
+async function syncAfterConnect() {
+  let fileData = null;
+  try { fileData = await activeStore.load(); } catch (e) { toast("폴더 BP 읽기 실패: " + e.message, "error"); return; }
+  if (fileData && fileData.bp) {
+    BP = fileData.bp;
+    if (fileData.pos) { for (const k of Object.keys(pos)) delete pos[k]; Object.assign(pos, fileData.pos); }
+    selId = null; selectedEdgeId = null; _multiSel.clear();
+    normalizeAllPositions();
+    render(); resetView();
+    document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+    toast(`폴더의 BP 로드됨 (rev ${BP.meta?.rev || 1})`, "ok");
+  } else {
+    await saveBP({ snapshot: true }); // 빈 폴더 → 현재 작업 시드
+    toast("현재 작업을 폴더에 저장했습니다", "ok");
   }
 }
 
@@ -2287,41 +2907,15 @@ function updateSaveIndicator() {
 }
 setInterval(updateSaveIndicator, 5000);
 
-async function saveBPToCloud() {
-  const url = (UI.supabaseUrl || "").trim();
-  const key = (UI.supabaseAnonKey || "").trim();
-  if (!url || !key) { toast("Supabase 미설정 (⌘. → 일반 설정 → 저장·백엔드)", "error"); return; }
-  const wsId = BP.meta?.workspaceId || BP.meta?.id || "default";
-  const res = await fetch(`${url}/rest/v1/blueprints?on_conflict=workspace_id`, {
-    method: "POST",
-    headers: {
-      "apikey": key,
-      "authorization": `Bearer ${key}`,
-      "content-type": "application/json",
-      "prefer": "resolution=merge-duplicates",
-    },
-    body: JSON.stringify([{ workspace_id: wsId, bp: BP, rev: BP.meta?.rev || 1, updated_at: new Date().toISOString() }]),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text()).slice(0,120)}`);
-  toast("클라우드 저장 완료", "ok");
-}
-
+// "클라우드 로드" 버튼 — CLOUD 티어로 전환(+ 워크스페이스 로드). 단일 진실원천 모델에서
+// 클라우드는 별개 미러가 아니라 활성 store 자체이므로 activateCloudStore 로 일원화.
 async function loadBPFromCloud() {
-  const url = (UI.supabaseUrl || "").trim();
-  const key = (UI.supabaseAnonKey || "").trim();
-  if (!url || !key) { toast("Supabase 미설정", "error"); return; }
-  const wsId = BP.meta?.workspaceId || BP.meta?.id || "default";
-  const res = await fetch(`${url}/rest/v1/blueprints?workspace_id=eq.${encodeURIComponent(wsId)}&select=bp,rev,updated_at`, {
-    headers: { "apikey": key, "authorization": `Bearer ${key}` },
-  });
-  if (!res.ok) { toast("클라우드 로드 실패: " + res.status, "error"); return; }
-  const rows = await res.json();
-  if (!rows.length) { toast("클라우드에 BP 없음", "info"); return; }
-  BP = rows[0].bp;
-  selId = null; selectedEdgeId = null; _multiSel.clear();
-  saveBP({ snapshot: true });
-  render(); resetView();
-  toast(`클라우드에서 로드 (rev ${rows[0].rev})`, "ok");
+  if (!hasSupabaseConfig()) {
+    toast("Supabase 미설정 (⌘. → 일반 설정 → 저장·백엔드)", "error");
+    openGeneralSettings(); setTimeout(() => switchGenSettingsTab("storage"), 50);
+    return;
+  }
+  await activateCloudStore();
 }
 
 function loadSnapshotsRaw() {
@@ -7477,7 +8071,8 @@ const ONB_STEPS = [
   { text: "캔버스 드래그·휠로 이동/줌. 노드 가장자리 파란 점을 끌어 다른 노드에 놓으면 의존성 엣지." },
   { text: "좌측 '팔레트' 탭에서 산출 카테고리별 노드를 끌어다 놓으세요. ⌘K 명령 팔레트 · ⌘F 검색·바꾸기." },
   { text: "노드 클릭 → 인스펙터 '첨부' 탭에서 이미지·sketch·링크·파일을 추가하면 모델에게 시각 레퍼런스로 전달됩니다." },
-  { text: "Outline(⌘O) → .md / .canvas / llms.txt 로 내보내 모델·외부 도구(Obsidian, Marp 등)에 서빙. Confirm Gate · Audit · Snapshot 으로 변경은 항상 추적됩니다." }
+  { text: "Outline(⌘O) → .md / .canvas / llms.txt 로 내보내 모델·외부 도구(Obsidian, Marp 등)에 서빙. Confirm Gate · Audit · Snapshot 으로 변경은 항상 추적됩니다." },
+  { text: "저장 위치는 상단 배지로 항상 표시됩니다 — ⚪ 이 브라우저(기본·공유 안 됨) · 🔵 폴더 연결 시 로컬 파일로 MCP와 공유 · 🟢 Supabase 설정 시 클라우드 공유. 배지를 클릭해 전환하세요." }
 ];
 let onbStep = 0;
 function showOnboarding() {
@@ -7597,6 +8192,7 @@ const UI_SCHEMA = {
     { key: "supabaseUrl",    label: "Supabase URL",    type: "text", def: "", placeholder: "https://xxxxx.supabase.co" },
     { key: "supabaseAnonKey",label: "Supabase anon key", type: "text", def: "", placeholder: "eyJhbGc..." },
     { key: "supabaseBucket", label: "Storage bucket",  type: "text", def: "ubp-attachments", placeholder: "ubp-attachments" },
+    { key: "workspaceId",    label: "워크스페이스 ID (웹·MCP 공유 키)", type: "text", def: "default", placeholder: "default — MCP 의 UBP_WORKSPACE_ID 와 동일하게" },
   ],
   ai: [
     { key: "llmProvider", label: "LLM Provider", type: "select", def: "none", options: [
@@ -8207,8 +8803,29 @@ normalizeAllPositions(); // 음수 좌표 양수로 shift
 render();
 resetView();
 document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+updateStoreBadge();
 showOnboarding();
 startRevWatch();
+
+// 설정 기반 store 자동 활성화 — Supabase(🟢) 우선, 없으면 연결된 폴더(🔵), 둘 다 없으면 이 브라우저(⚪).
+(async () => {
+  // 🟢 CLOUD — Supabase 설정 시. activateCloudStore 내부 syncAfterConnect 가 로드·렌더까지 처리.
+  if (await activateCloudStore()) return;
+  // 🔵 FILE — 이전에 연결한 폴더 핸들이 IndexedDB 에 있으면 권한 확인 후 파일로 교체.
+  try {
+    const st = await restoreFileStoreFromIdb();
+    if (st === true) {
+      await loadBP();
+      if (Object.keys(pos).length === 0) autoLayout();
+      normalizeAllPositions();
+      render(); resetView();
+      document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+      if (typeof startFilePoll === "function") startFilePoll();
+      toast("연결된 폴더에서 BP 복원됨", "ok");
+    }
+  } catch (e) { console.warn("[UBP] FILE 복원 스킵:", e.message); }
+  if (typeof updateStoreBadge === "function") updateStoreBadge();
+})();
 </script>
 
 </body>
