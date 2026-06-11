@@ -3672,13 +3672,17 @@ function conflictedNodeSet(pairs) {
 function refreshConflicts() {
   _currentConflicts = findConflictsLocal(proposals);
   const count = _currentConflicts.length;
+  // 아이콘 버튼에 텍스트를 주입하면 정사각 레이아웃이 깨진다 — missing-btn 과 동일한 숫자 배지 패턴 사용.
   const btn = document.getElementById("conflict-btn");
   if (count > 0) {
     btn.style.color = "var(--status-deferred)";
-    btn.innerHTML = `<svg class="ic"><use href="#i-merge"/></svg> 충돌 (${count})`;
+    btn.style.position = "relative";
+    btn.innerHTML = `<svg class="ic"><use href="#i-merge"/></svg><span style="position:absolute;top:-4px;right:-4px;background:var(--status-deferred);color:#fff;font-size:9px;font-weight:700;border-radius:8px;min-width:14px;height:14px;padding:0 3px;display:inline-flex;align-items:center;justify-content:center;line-height:1;">${count}</span>`;
+    btn.setAttribute("data-tooltip", `충돌 검토\n대기 제안 간 anchor 충돌 ${count}건`);
   } else {
     btn.style.color = "";
-    btn.innerHTML = `<svg class="ic"><use href="#i-merge"/></svg> 충돌`;
+    btn.innerHTML = `<svg class="ic"><use href="#i-merge"/></svg>`;
+    btn.setAttribute("data-tooltip", "충돌 검토\n대기 중 제안 간 anchor 충돌 표시");
   }
   // panel 갱신
   const panel = document.getElementById("conflict-panel");
@@ -4430,8 +4434,15 @@ function startPortConnection(e, nodeId) {
 function updateTempLine(cx, cy) {
   if (!activeTempLine) return;
   const rect = canvasEl.getBoundingClientRect();
-  activeTempLine.setAttribute("x2", (cx - rect.left) / zoom);
-  activeTempLine.setAttribute("y2", (cy - rect.top) / zoom);
+  const tx = (cx - rect.left) / zoom, ty = (cy - rect.top) / zoom;
+  // 시작점도 결과 엣지와 같은 변 앵커 — 드래그 중 모습과 생성 결과가 일치
+  if (connectingFromNode) {
+    const a = anchorOf(connectingFromNode, { x: tx, y: ty });
+    activeTempLine.setAttribute("x1", a.x);
+    activeTempLine.setAttribute("y1", a.y);
+  }
+  activeTempLine.setAttribute("x2", tx);
+  activeTempLine.setAttribute("y2", ty);
   // hover target 시각 표시 — pointerCapture 때문에 :hover CSS가 발현되지 않으므로
   // elementFromPoint 로 직접 감지해 .drop-active 클래스를 토글한다.
   document.querySelectorAll(".node.drop-active").forEach(el => el.classList.remove("drop-active"));
@@ -4466,19 +4477,45 @@ function stopPortConnection(e) {
   connectingFromNode = null;
 }
 
+// 엣지 타입 단일 진실원천 — 생성 팝업·편집 팝업·캔버스 렌더가 같은 순서·스타일을 공유.
+// (AIM 룰 §5: 무지개 금지. depends-on 만 Mint accent, 나머지 gray scale + dash 구분)
+const EDGE_TYPES = [
+  { t: "parent",     ko: "구조 — 부모로 묶임" },
+  { t: "depends-on", ko: "핵심 의존 (강조)" },
+  { t: "supports",   ko: "근거·지지" },
+  { t: "realizes",   ko: "구현·실현" },
+  { t: "flows-to",   ko: "흐름 순서" },
+  { t: "renders-on", ko: "화면에 렌더" },
+  { t: "traces-to",  ko: "코드·산출물 추적" },
+];
+const EDGE_STYLE = {
+  "parent":     { color: "#717171", w: 2,   dash: "",                             cap: "butt"  },
+  "depends-on": { color: "var(--accent)", w: 2.5, dash: 'stroke-dasharray="8 5"', cap: "round" },
+  "supports":   { color: "#2F2F2F", w: 2,   dash: 'stroke-dasharray="1 6"',       cap: "round" },
+  "realizes":   { color: "#4F4F4F", w: 2,   dash: 'stroke-dasharray="5 3"',       cap: "round" },
+  "flows-to":   { color: "#A8A8A8", w: 2.5, dash: "",                             cap: "butt"  },
+  "renders-on": { color: "#A8A8A8", w: 1.5, dash: 'stroke-dasharray="2 4"',       cap: "round" },
+  "traces-to":  { color: "#4F4F4F", w: 2.5, dash: 'stroke-dasharray="14 5"',      cap: "butt"  },
+};
+function edgeSwatch(t) {
+  const s = EDGE_STYLE[t] || { color: "#A8A8A8", w: 1, dash: "", cap: "butt" };
+  return `<svg width="34" height="8" style="flex:none;display:block;"><line x1="1" y1="4" x2="33" y2="4" stroke="${s.color}" stroke-width="${s.w}" ${s.dash} stroke-linecap="${s.cap}"/></svg>`;
+}
+
 function showEdgeTypePopup(fromId, toId, clientX, clientY) {
   // 기존 popup 제거
   document.querySelectorAll(".edge-type-popup").forEach(el => el.remove());
-  const types = ["parent","depends-on","supports","realizes","flows-to","renders-on","traces-to"];
   const pop = document.createElement("div");
   pop.className = "edge-type-popup";
-  pop.style.cssText = `position:fixed;z-index:1000;background:var(--bg-elev);border:1px solid var(--panel-border);border-radius:var(--r-md);box-shadow:var(--shadow-3);padding:var(--s-3);font-family:var(--font-sans);font-size:13px;min-width:240px;`;
-  pop.style.left = `${Math.min(clientX, window.innerWidth - 260)}px`;
-  pop.style.top = `${Math.min(clientY, window.innerHeight - 320)}px`;
+  pop.style.cssText = `position:fixed;z-index:1000;background:var(--bg-elev);border:1px solid var(--panel-border);border-radius:var(--r-md);box-shadow:var(--shadow-3);padding:var(--s-3);font-family:var(--font-sans);font-size:13px;min-width:268px;`;
+  pop.style.left = `${Math.min(clientX, window.innerWidth - 290)}px`;
+  pop.style.top = `${Math.min(clientY, window.innerHeight - 340)}px`;
   pop.innerHTML = `
     <div style="font-weight:600;margin-bottom:8px;font-size:12px;">엣지 type 선택 (Shift+drop = depends-on 즉시)</div>
-    ${types.map((t,i) => `<label style="display:block;padding:4px 6px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='var(--line)'" onmouseout="this.style.background=''">
-      <input type="radio" name="edge-type" value="${t}" ${i===1?"checked":""} style="margin-right:6px"> ${t}
+    ${EDGE_TYPES.map(({ t, ko }) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='var(--line)'" onmouseout="this.style.background=''">
+      <input type="radio" name="edge-type" value="${t}" ${t === "depends-on" ? "checked" : ""} style="width:auto;margin:0;flex:none;accent-color:var(--accent);">
+      ${edgeSwatch(t)}
+      <span style="flex:1;line-height:1.3;"><b>${t}</b><br><span style="opacity:.6;font-size:10.5px;">${ko}</span></span>
     </label>`).join("")}
     <input id="edge-popup-label" placeholder="label (선택, 자유)" style="width:100%;margin-top:8px;padding:4px 8px;font-size:12px;">
     <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end;">
@@ -4517,6 +4554,39 @@ function centerOf(id) {
     if (el) _sizeCache.set(id, s);
   }
   return { x: p.x + s.w / 2, y: p.y + s.h / 2 };
+}
+
+// ============ 엣지 앵커 — 중앙이 아니라 상대 위치에 따른 변(邊) 중앙에 부착 ============
+// 각도 우세축(|dx| vs |dy|)으로 좌/우/상/하변을 고르므로 tree·grid·radial 모든 레이아웃에서 자연스럽다.
+function anchorOf(id, towards) {
+  const c = centerOf(id); // _sizeCache 채움
+  const s = _sizeCache.get(id) || { w: 224, h: 88 };
+  const dx = towards.x - c.x, dy = towards.y - c.y;
+  const hw = s.w / 2, hh = s.h / 2;
+  // 변 선택: 중심→상대 선이 실제로 교차하는 변 (aspect 보정). 앵커는 그 교차점 —
+  // 변 중앙 고정이 아니므로 한 노드에서 나가는 여러 엣지가 변을 따라 분산된다 (다발 방지).
+  if (Math.abs(dx) * hh >= Math.abs(dy) * hw) {
+    const side = dx >= 0 ? "right" : "left";
+    const y = dx !== 0 ? c.y + dy * (hw / Math.abs(dx)) : c.y;
+    return { x: c.x + (dx >= 0 ? hw : -hw), y: Math.max(c.y - hh * 0.8, Math.min(c.y + hh * 0.8, y)), side };
+  }
+  const side = dy >= 0 ? "bottom" : "top";
+  const x = dy !== 0 ? c.x + dx * (hh / Math.abs(dy)) : c.x;
+  return { x: Math.max(c.x - hw * 0.8, Math.min(c.x + hw * 0.8, x)), y: c.y + (dy >= 0 ? hh : -hh), side };
+}
+const _sideOff = (side, k) =>
+  side === "right" ? [k, 0] : side === "left" ? [-k, 0] : side === "bottom" ? [0, k] : [0, -k];
+// 변에서 수직으로 빠져나가는 큐빅 베지어 (xyflow/JSON Canvas 계열 표준 시각)
+function edgePathD(a, b) {
+  const k = Math.max(24, Math.min(120, Math.hypot(b.x - a.x, b.y - a.y) * 0.4));
+  const [ax, ay] = _sideOff(a.side, k);
+  const [bx, by] = _sideOff(b.side, k);
+  return { d: `M ${a.x} ${a.y} C ${a.x + ax} ${a.y + ay}, ${b.x + bx} ${b.y + by}, ${b.x} ${b.y}`,
+           c1: { x: a.x + ax, y: a.y + ay }, c2: { x: b.x + bx, y: b.y + by } };
+}
+// 베지어 t=0.5 지점 — 라벨 위치
+function bezierMid(a, c1, c2, b) {
+  return { x: (a.x + 3 * c1.x + 3 * c2.x + b.x) / 8, y: (a.y + 3 * c1.y + 3 * c2.y + b.y) / 8 };
 }
 
 // =================== LAYOUT (layered DAG, parent edges) ===================
@@ -4904,34 +4974,25 @@ function drawEdges() {
   for (const n of BP.nodes) {
     centers[n.id] = centerOf(n.id);
   }
+  // 스타일은 EDGE_STYLE 단일 원천 (팝업 스와치와 동일). 끝점은 중앙이 아닌 변 중앙 앵커 + 베지어.
   svg.innerHTML = BP.edges.map((e, ei) => {
-    const a = centers[e.from], b = centers[e.to];
-    if (!a || !b) return "";
-    // AIM 룰 §5: 무지개 금지. depends-on (핵심 의존) 만 Mint accent, 나머지는 Gray scale.
-    // dash 패턴 + 굵기 + 색 단계로 7종 구분. stroke-linecap=round 로 점선이 깔끔하게.
-    const styleByType = {
-      "parent":     { color: "#717171", w: 2,   dash: "",                                  cap: "butt"  }, // gray-400 solid
-      "depends-on": { color: "var(--accent)", w: 2.5, dash: 'stroke-dasharray="8 5"',      cap: "round" }, // mint long-dash 강조
-      "supports":   { color: "#2F2F2F", w: 2,   dash: 'stroke-dasharray="1 6"',            cap: "round" }, // gray-600 dot
-      "realizes":   { color: "#4F4F4F", w: 2,   dash: 'stroke-dasharray="5 3"',            cap: "round" }, // gray-500 mid-dash
-      "flows-to":   { color: "#A8A8A8", w: 2.5, dash: "",                                  cap: "butt"  }, // gray-300 두꺼운 실선
-      "renders-on": { color: "#A8A8A8", w: 1.5, dash: 'stroke-dasharray="2 4"',            cap: "round" }, // gray-300 짧은 점선
-      "traces-to":  { color: "#4F4F4F", w: 2.5, dash: 'stroke-dasharray="14 5"',           cap: "butt"  }  // gray-500 매우 긴 대시
-    };
-    const s = styleByType[e.type] || { color: "#A8A8A8", w: 1, dash: "", cap: "butt" };
+    const ca = centers[e.from], cb = centers[e.to];
+    if (!ca || !cb) return "";
+    const a = anchorOf(e.from, cb);
+    const b = anchorOf(e.to, ca);
+    const { d, c1, c2 } = edgePathD(a, b);
+    const s = EDGE_STYLE[e.type] || { color: "#A8A8A8", w: 1, dash: "", cap: "butt" };
     const edgeKey = `${e.from}::${e.to}::${e.type}`;
     const isSel = (selectedEdgeId === edgeKey);
     const sw = isSel ? 4 : s.w;
-    const cap = s.cap || "butt";
     // Wide invisible hit-area first, then visible stroke. 14px hit zone makes edges clickable.
-    const hit = `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="transparent" stroke-width="14" class="hit" data-edge-key="${edgeKey}" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
+    const hit = `<path d="${d}" fill="none" stroke="transparent" stroke-width="14" class="hit" data-edge-key="${edgeKey}" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
     const selClass = isSel ? ' class="edge-selected"' : '';
-    const line = hit + `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${s.color}" stroke-width="${sw}" stroke-linecap="${cap}" ${s.dash} data-edge-idx="${ei}" data-edge-key="${edgeKey}"${selClass} style="pointer-events:stroke;cursor:pointer;" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
-    // edge label (정책 그래프 등) — type 위에 자유 라벨
+    const line = hit + `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${sw}" stroke-linecap="${s.cap || "butt"}" ${s.dash} data-edge-idx="${ei}" data-edge-key="${edgeKey}"${selClass} style="pointer-events:stroke;cursor:pointer;" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
+    // edge label (정책 그래프 등) — 베지어 중점 위
     if (e.label) {
-      const mx = (a.x + b.x) / 2;
-      const my = (a.y + b.y) / 2;
-      return line + `<text x="${mx}" y="${my-4}" text-anchor="middle" font-size="10" fill="${s.color}" style="font-family:var(--font-sans);pointer-events:none;background:var(--bg);"><tspan style="background:var(--bg)">${esc(e.label)}</tspan></text>`;
+      const m = bezierMid(a, c1, c2, b);
+      return line + `<text x="${m.x}" y="${m.y-4}" text-anchor="middle" font-size="10" fill="${s.color}" style="font-family:var(--font-sans);pointer-events:none;background:var(--bg);"><tspan style="background:var(--bg)">${esc(e.label)}</tspan></text>`;
     }
     return line;
   }).join("");
@@ -5091,7 +5152,7 @@ function onEdgeClick(edgeIdx, ev) {
     <div style="margin-bottom:8px;">
       Type:
       <select onchange="setEdgeType(${edgeIdx}, this.value)" style="font-size:11.5px;padding:2px 6px;width:auto;">
-        ${["depends-on","supports","realizes","flows-to","renders-on","traces-to","parent"].map(t => `<option value="${t}" ${t===e.type?"selected":""}>${t}</option>`).join("")}
+        ${EDGE_TYPES.map(({ t }) => `<option value="${t}" ${t===e.type?"selected":""}>${t}</option>`).join("")}
       </select>
     </div>
     <input value="${esc(e.label || "")}" placeholder="label (선택)" onchange="setEdgeLabel(${edgeIdx}, this.value)" style="width:100%;margin-bottom:8px;padding:4px 8px;font-size:11.5px;">
