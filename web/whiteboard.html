@@ -248,7 +248,12 @@
   #header .brand .store-badge.tier-cloud { border-color: #2ea043; color: #2ea043; }
   #header .brand .store-badge.tier-file  { border-color: #3b82f6; color: #3b82f6; }
   #header .brand .store-badge.tier-local { border-color: var(--panel-border); color: var(--muted); }
-  #header .brand .store-badge.needs-attn { border-color: var(--warn); color: var(--warn); }
+  #header .brand .store-badge.needs-attn { border-color: var(--warn); color: var(--warn); animation: badge-pulse 1.6s ease-in-out 5; }
+  @keyframes badge-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45); }
+    50%      { box-shadow: 0 0 0 5px rgba(245, 158, 11, 0); }
+  }
+  @media (prefers-reduced-motion: reduce) { #header .brand .store-badge.needs-attn { animation: none; } }
   #header .brand #save-indicator { font-size: 10.5px; color: var(--muted); }
   .actions-row { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
   .actions-row .sep { width: 1px; height: 20px; background: var(--panel-border); margin: 0 var(--s-1); }
@@ -2245,6 +2250,17 @@ function getZoomStep() { return (UI && typeof UI.zoomStep === "number") ? UI.zoo
 const auditHistory = []; // local mirror of confirmed/proposed/rejected events
 const historyStack = [], redoStack = [];
 
+// O(1) 노드 조회 — 핫패스(드래그 containment 등)에서 BP.nodes.find O(n) 스캔 대체.
+// render()/배열 교체 시 무효화. BP.nodes 가 filter 로 재할당되면 참조가 달라져 자동 재구축.
+let _nodeMap = null;
+function nodeById(id) {
+  if (!_nodeMap || _nodeMap._src !== BP.nodes || _nodeMap.size !== BP.nodes.length) {
+    _nodeMap = new Map(BP.nodes.map(n => [n.id, n]));
+    _nodeMap._src = BP.nodes;
+  }
+  return _nodeMap.get(id);
+}
+
 // =================== AUDIT ===================
 function audit(kind, entry) {
   auditHistory.push({ ts: Date.now(), kind, ...entry });
@@ -2253,7 +2269,7 @@ function audit(kind, entry) {
 
 function saveState(intent = "edit") {
   historyStack.push(JSON.stringify(BP));
-  if (historyStack.length > 80) historyStack.shift();
+  if (historyStack.length > 40) historyStack.shift(); // 풀 스냅샷 스택 — 40개면 충분, 메모리 절반
   redoStack.length = 0;
   scheduleAutoSave(); // 모든 변경 시 자동 저장 트리거
 }
@@ -2536,6 +2552,7 @@ async function reacquireFilePermission() {
 // pull() 이 lastDiskRev 와 디스크 rev 를 비교 → 변경 시에만 반영(자기 쓰기 재반영 없음).
 let _filePollTimer = null;
 async function _filePollTick() {
+  if (document.hidden) return; // 비활성 탭은 폴링 정지 — visibilitychange 가 복귀 시 즉시 1회 당겨줌
   if (!activeStore || activeStore.tier !== StoreTier.FILE || typeof activeStore.pull !== "function") return;
   // 로컬 미저장 편집 중이면 자동 클로버 금지 — 알림만(머지는 TD3).
   if (_autosaveTimer) return;
@@ -2704,7 +2721,7 @@ function startCloudSync() {
   stopCloudSync();
   if (!activeStore || activeStore.tier !== StoreTier.CLOUD) return;
   if (typeof activeStore.subscribe === "function") _cloudUnsub = activeStore.subscribe(_cloudPullApply);
-  _cloudPollTimer = setInterval(_cloudPullApply, 8000); // Realtime 끊겨도 안전망
+  _cloudPollTimer = setInterval(() => { if (!document.hidden) _cloudPullApply(); }, 8000); // Realtime 끊겨도 안전망 (비활성 탭은 정지)
   window.addEventListener("focus", _cloudPullApply);
   document.addEventListener("visibilitychange", _onVisCloudPoll);
 }
@@ -2793,6 +2810,32 @@ async function disconnectFolder() {
 
 // TD3: 분기(충돌) 다이얼로그 — onFileConflict 에 주입. 침묵 덮어쓰기 절대 금지.
 let _pendingDivergence = null;
+// 분기 시 "뭘 잃는지" 보이게 — 노드 추가/삭제/변경을 제목 단위로 요약 (자동 머지는 여전히 안 함)
+function bpDiffSummary(localBp, remoteBp) {
+  try {
+    if (!remoteBp || !Array.isArray(remoteBp.nodes)) return "";
+    const l = new Map((localBp.nodes || []).map(n => [n.id, n]));
+    const r = new Map(remoteBp.nodes.map(n => [n.id, n]));
+    const onlyRemote = [], onlyLocal = [], differs = [];
+    for (const [id, n] of r) if (!l.has(id)) onlyRemote.push(n.title || id);
+    for (const [id, n] of l) {
+      const o = r.get(id);
+      if (!o) onlyLocal.push(n.title || id);
+      else if (JSON.stringify(o) !== JSON.stringify(n)) differs.push(n.title || id);
+    }
+    const edgeDelta = (remoteBp.edges?.length ?? 0) - (localBp.edges?.length ?? 0);
+    const cap = a => a.slice(0, 5).map(esc).join(", ") + (a.length > 5 ? ` 외 ${a.length - 5}개` : "");
+    const parts = [];
+    if (onlyRemote.length) parts.push(`외부에만 있는 노드 <b>+${onlyRemote.length}</b>: ${cap(onlyRemote)}`);
+    if (onlyLocal.length)  parts.push(`내 쪽에만 있는 노드 <b>${onlyLocal.length}</b>: ${cap(onlyLocal)} <span style="opacity:.7">(외부 버전 로드 시 사라짐)</span>`);
+    if (differs.length)    parts.push(`내용이 다른 노드 <b>${differs.length}</b>: ${cap(differs)}`);
+    if (edgeDelta !== 0)   parts.push(`엣지 수 차이 ${edgeDelta > 0 ? "+" : ""}${edgeDelta}`);
+    if (!parts.length) return "";
+    return `<div style="margin:10px 0;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;line-height:1.7">` +
+      `<b>변경 미리보기</b><br>${parts.join("<br>")}</div>`;
+  } catch { return ""; }
+}
+
 function showDivergenceDialog(info) {
   _pendingDivergence = info;
   const isCloud = info.tier === StoreTier.CLOUD;
@@ -2802,7 +2845,8 @@ function showDivergenceDialog(info) {
   const target = isCloud ? "클라우드" : "파일";
   document.getElementById("store-divergence-body").innerHTML =
     `${where}의 <b>rev ${info.diskRev}</b> 가 내 작업 기준(<b>rev ${info.localRev}</b>)과 다릅니다. ` +
-    `${who}이(가) ${src} 을 바꿨을 수 있습니다.<br><br>` +
+    `${who}이(가) ${src} 을 바꿨을 수 있습니다.` +
+    (bpDiffSummary(BP, info.disk) || "<br><br>") +
     `• <b>${where} 버전 불러오기</b>: 외부 변경을 받아들이고 내 미저장 변경은 버립니다.<br>` +
     `• <b>내 버전으로 덮어쓰기</b>: 외부 변경을 버리고 내 작업으로 ${target}을 덮어씁니다.<br><br>` +
     `자동 머지는 하지 않습니다.`;
@@ -2891,9 +2935,26 @@ async function syncAfterConnect() {
   }
 }
 
+// 자동저장 — 발화 시 _autosaveTimer 를 반드시 null 로 되돌린다.
+// (안 돌리면 _filePollTick 의 "편집 중 가드" if(_autosaveTimer) 가 영구 참 → 첫 편집 후 파일 폴링이 영영 멈추는 버그)
+// 또한 저장이 비행 중이면 큐잉만 — FILE/CLOUD 비동기 저장의 중복 발사 방지.
+let _saveInFlight = false, _saveQueued = false;
 function scheduleAutoSave() {
   if (_autosaveTimer) clearTimeout(_autosaveTimer);
-  _autosaveTimer = setTimeout(() => { saveBP({ snapshot: false, cloud: false }); }, 1500);
+  _autosaveTimer = setTimeout(_autosaveFire, 2500);
+}
+async function _autosaveFire() {
+  _autosaveTimer = null;
+  if (_saveInFlight) { _saveQueued = true; return; }
+  _saveInFlight = true;
+  try {
+    await Promise.resolve(activeStore.save(BP, pos, { snapshot: false }));
+  } catch (e) {
+    toast("저장 실패: " + (e.message || e), "error");
+  } finally {
+    _saveInFlight = false;
+    if (_saveQueued) { _saveQueued = false; scheduleAutoSave(); }
+  }
 }
 
 function updateSaveIndicator() {
@@ -3811,14 +3872,11 @@ function onGlobalPointerMove(e) {
     }
     const el = document.querySelector(`.node[data-id="${dragNodeId}"]`);
     if (el) { el.style.left = `${pos[dragNodeId].x}px`; el.style.top = `${pos[dragNodeId].y}px`; }
-    updateAlignGuides(dragNodeId);
-    // T-W: containment 미리보기 (T-Y rAF throttle)
-    schedulePreviewContainment(_multiSel.size > 1 ? [..._multiSel] : [dragNodeId]);
-    drawEdges(); updateMinimap();
+    scheduleDragVisuals(); // 가이드·containment·엣지·미니맵은 프레임당 1회만 (위치 스타일만 즉시)
   }
   else if (connectingFromNode) updateTempLine(e.clientX, e.clientY);
 }
-document.addEventListener("mousemove", onGlobalPointerMove);
+// pointermove 만 등록 — mousemove 중복 등록 시 마우스 이동 1회당 핸들러가 2번 실행됨(호환 이벤트 재발화)
 document.addEventListener("pointermove", onGlobalPointerMove);
 
 function updateAlignGuides(activeId) {
@@ -3842,6 +3900,21 @@ function updateAlignGuides(activeId) {
 function hideAlignGuides() {
   document.getElementById("align-guide-h").style.display = "none";
   document.getElementById("align-guide-v").style.display = "none";
+}
+
+// 드래그 시각 갱신(가이드/containment/엣지/미니맵) — 다음 paint 직전 1회만.
+// 드래그 종료 직후 마지막 rAF 가 발화해도 엣지/미니맵은 최종 좌표로 그려져야 하므로 dragNodeId 가드는 가이드류에만.
+let _dragVisualRaf = null;
+function scheduleDragVisuals() {
+  if (_dragVisualRaf != null) return;
+  _dragVisualRaf = requestAnimationFrame(() => {
+    _dragVisualRaf = null;
+    if (dragNodeId) {
+      updateAlignGuides(dragNodeId);
+      schedulePreviewContainment(_multiSel.size > 1 ? [..._multiSel] : [dragNodeId]);
+    }
+    drawEdges(); updateMinimap();
+  });
 }
 
 // T-Y: rAF throttle — 매 mousemove 마다가 아니라 다음 paint 직전 1회만 평가.
@@ -3873,7 +3946,7 @@ function previewFrameContainment(activeIds, exclude = new Set()) {
   const targets = new Set();
   for (const id of activeIds) {
     if (exclude.has(id)) continue;
-    const n = BP.nodes.find(x => x.id === id);
+    const n = nodeById(id);
     if (!n) continue;
     const p = pos[id]; if (!p) continue;
     let cx, cy;
@@ -4113,12 +4186,18 @@ function commitEdgePopup(fromId, toId) {
   pop.remove();
   toast(`${type} 엣지 생성${label?` (${label})`:""}`, "ok");
 }
+// 노드 크기 캐시 — drawEdges 가 매 프레임 전 노드 querySelector+offsetWidth(강제 레이아웃)를 치지 않게.
+// render() 가 DOM 을 재구축하므로 거기서 무효화.
+const _sizeCache = new Map();
 function centerOf(id) {
   const p = pos[id] || { x: 0, y: 0 };
-  const el = document.querySelector(`[data-id="${id}"]`);
-  const w = el ? el.offsetWidth : 224;
-  const h = el ? el.offsetHeight : 88;
-  return { x: p.x + w / 2, y: p.y + h / 2 };
+  let s = _sizeCache.get(id);
+  if (!s) {
+    const el = document.querySelector(`[data-id="${id}"]`);
+    s = { w: el ? el.offsetWidth : 224, h: el ? el.offsetHeight : 88 };
+    if (el) _sizeCache.set(id, s);
+  }
+  return { x: p.x + s.w / 2, y: p.y + s.h / 2 };
 }
 
 // =================== LAYOUT (layered DAG, parent edges) ===================
@@ -4330,6 +4409,8 @@ function normalizeAllPositions() {
 }
 
 function render() {
+  _sizeCache.clear(); // DOM 재구축 → 노드 크기 캐시 무효화
+  _nodeMap = null;    // 노드 조회 맵 무효화
   // Toggle empty state
   document.getElementById("empty-canvas").classList.toggle("show", BP.nodes.length === 0);
   [...canvasEl.querySelectorAll(".node")].forEach(el => el.remove());
@@ -4504,7 +4585,7 @@ function drawEdges() {
   for (const n of BP.nodes) {
     centers[n.id] = centerOf(n.id);
   }
-  svg.innerHTML = BP.edges.map(e => {
+  svg.innerHTML = BP.edges.map((e, ei) => {
     const a = centers[e.from], b = centers[e.to];
     if (!a || !b) return "";
     // AIM 룰 §5: 무지개 금지. depends-on (핵심 의존) 만 Mint accent, 나머지는 Gray scale.
@@ -4519,7 +4600,6 @@ function drawEdges() {
       "traces-to":  { color: "#4F4F4F", w: 2.5, dash: 'stroke-dasharray="14 5"',           cap: "butt"  }  // gray-500 매우 긴 대시
     };
     const s = styleByType[e.type] || { color: "#A8A8A8", w: 1, dash: "", cap: "butt" };
-    const ei = BP.edges.indexOf(e);
     const edgeKey = `${e.from}::${e.to}::${e.type}`;
     const isSel = (selectedEdgeId === edgeKey);
     const sw = isSel ? 4 : s.w;
@@ -8060,6 +8140,17 @@ document.addEventListener("keydown", e => {
   else if (meta && e.key === "0") { e.preventDefault(); resetView(); }
   else if (meta && (e.key === "=" || e.key === "+")) { e.preventDefault(); zoomIn(); }
   else if (meta && e.key === "-") { e.preventDefault(); zoomOut(); }
+  // 제안 검토 단축 — ⌘/Ctrl+Enter 첫 보류 제안 승인, ⌘/Ctrl+Backspace 거절 (제안 검토 동선 단축)
+  else if (meta && e.key === "Enter" && !modalOpen && proposals.length > 0) {
+    e.preventDefault();
+    toast(`⌘Enter 승인: ${proposals[0].intent}`, "ok");
+    confirmProposal(proposals[0].id);
+  }
+  else if (meta && e.key === "Backspace" && !modalOpen && proposals.length > 0) {
+    e.preventDefault();
+    toast(`⌘⌫ 거절: ${proposals[0].intent}`, "ok");
+    rejectProposal(proposals[0].id);
+  }
 });
 
 // Palette input keystrokes

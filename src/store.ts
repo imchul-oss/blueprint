@@ -189,6 +189,17 @@ export class BlueprintStore {
   private writeAudit(entry: AuditEntry): void {
     if (!this.auditPath) return;
     try {
+      // 10MB 로테이션 — tailAudit 이 전체 파일을 메모리에 올리므로 무한 성장 차단.
+      try {
+        const st = statSync(this.auditPath);
+        if (st.size > 10 * 1024 * 1024) {
+          const stamp = new Date(Date.now()).toISOString().slice(0, 10);
+          renameSync(
+            this.auditPath,
+            this.auditPath.replace(/\.jsonl$/, "") + `-${stamp}-${st.mtimeMs % 100000 | 0}.jsonl`,
+          );
+        }
+      } catch { /* 파일 없음 — 첫 기록 */ }
       appendFileSync(this.auditPath, JSON.stringify(entry) + "\n", "utf8");
     } catch (e) {
       console.error(`[ubp] audit 실패: ${(e as Error).message}`);
@@ -206,9 +217,10 @@ export class BlueprintStore {
     if (this.snapshotDir) {
       const file = join(this.snapshotDir, `r${String(rev).padStart(5, "0")}-${sha}.json`);
       try {
+        // 스냅샷은 사람이 직접 읽는 파일이 아님 — compact 로 저장 공간 ~20% 절약 (bp.json 본체는 pretty 유지)
         writeFileSync(
           file,
-          JSON.stringify({ rev, sha, actor, intent, ts: Date.now(), bp: this.bp }, null, 2),
+          JSON.stringify({ rev, sha, actor, intent, ts: Date.now(), bp: this.bp }),
           "utf8",
         );
         this.pruneSnapshots(50);

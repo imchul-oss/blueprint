@@ -46,15 +46,40 @@ policyWatcher.start();
 const server = new McpServer({ name: "ubp", version: "0.2.0" });
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 
+// detectMissing 은 rev 가 같으면 결과도 같다 — 4개 도구가 매 호출 풀스캔하지 않게 rev 키 메모이즈.
+let _missingCache: { rev: number; data: ReturnType<typeof detectMissing> } | null = null;
+function cachedMissing(bp: ReturnType<typeof store.get>) {
+  const rev = bp.meta.rev ?? 1;
+  if (_missingCache && _missingCache.rev === rev) return _missingCache.data;
+  const data = detectMissing(bp);
+  _missingCache = { rev, data };
+  return data;
+}
+
+// nodeIds 부분 조회 — 대상 노드 + 닿는 엣지 + 1-hop 이웃(맥락)만 남긴다. 토큰 절약용.
+function scopeBlueprint(bp: ReturnType<typeof store.get>, nodeIds: string[]) {
+  const want = new Set(nodeIds);
+  const keep = new Set(nodeIds);
+  const edges = bp.edges.filter((e) => want.has(e.from) || want.has(e.to));
+  for (const e of edges) { keep.add(e.from); keep.add(e.to); }
+  return { ...bp, nodes: bp.nodes.filter((n) => keep.has(n.id)), edges };
+}
+
 server.tool(
   "read_blueprint",
-  "현재 블루프린트를 JSON+자연어요약+anchor 형태로 반환. 이걸로 PRD/PPT/코드 등을 렌더하라.",
-  {},
-  async () => {
-    const s = serializeForModel(store.get());
+  "현재 블루프린트를 JSON+자연어요약+anchor 형태로 반환. 이걸로 PRD/PPT/코드 등을 렌더하라. nodeIds 지정 시 해당 노드+1-hop 이웃만 반환(반복 작업 토큰 절약).",
+  { nodeIds: z.array(z.string()).optional().describe("부분 조회할 노드 id 목록. 생략 시 전체.") },
+  async ({ nodeIds }) => {
+    let bp = store.get();
+    let scopeNote = "";
+    if (nodeIds && nodeIds.length > 0) {
+      bp = scopeBlueprint(bp, nodeIds);
+      scopeNote = `\n[scope: ${nodeIds.join(",")} +1-hop — 전체는 nodeIds 생략]`;
+    }
+    const s = serializeForModel(bp);
     const rev = store.rev();
     return text(
-      `${s.summary}\n\n[meta.rev=${rev}]\n\n---\n[JSON]\n${JSON.stringify(s.json)}`,
+      `${s.summary}\n\n[meta.rev=${rev}]${scopeNote}\n\n---\n[JSON]\n${JSON.stringify(s.json)}`,
     );
   },
 );
@@ -67,7 +92,7 @@ server.tool(
 );
 
 server.tool("get_missing", "필수 슬롯이 빈 노드와 clarify 질문을 반환.", {}, async () => {
-  const reports = detectMissing(store.get());
+  const reports = cachedMissing(store.get());
   if (reports.length === 0) return text("결여 0건.");
   return text(missingToClarify(reports).join("\n"));
 });
@@ -86,7 +111,10 @@ server.tool(
     try {
       parsed = JSON.parse(ops);
     } catch {
-      return text("ERROR: ops 가 유효한 JSON 배열이 아닙니다.");
+      return text(
+        'ERROR: ops 가 유효한 JSON 배열이 아닙니다.\n' +
+        '예시: [{"op":"add_node","node":{"id":"n_x","role":"feature","title":"...","status":"draft"}},{"op":"add_edge","edge":{"from":"n_x","to":"n_root","type":"parent"}}]',
+      );
     }
     const p = store.propose(parsed, intent, { actor, baseRev });
     return text(
@@ -96,7 +124,8 @@ server.tool(
         `영향도: ${p.impact.level} (파급 ${p.impact.affected.length}개: ${
           p.impact.affectedTitles.join(", ") || "없음"
         })\n` +
-        `-> 사람 확인 후 confirm_update("${p.id}", actor=user) 호출.`,
+        `-> 사람 확인 후 confirm_update("${p.id}", actor=user) 호출.\n` +
+        `[impact_json] ${JSON.stringify({ proposalId: p.id, baseRev: p.baseRev, level: p.impact.level, affected: p.impact.affected })}`,
     );
   },
 );
@@ -107,7 +136,11 @@ server.tool(
   { proposalId: z.string(), actor: z.string().default("user") },
   async ({ proposalId, actor }) => {
     const r = store.confirm(proposalId, { actor });
-    if (!r) return text(`ERROR: 제안 ${proposalId} 없음/만료 또는 rev 충돌.`);
+    if (!r)
+      return text(
+        `ERROR: 제안 ${proposalId} 없음/만료 또는 rev 충돌.\n` +
+          `다음: (1) list_pending 으로 보류 제안 확인, (2) read_blueprint 로 최신 rev 확보, (3) 최신 기준으로 propose_update 재제안. rev 충돌은 외부(웹·다른 세션) 변경이 먼저 반영됐다는 뜻 — 자동 덮어쓰기는 의도적으로 막혀 있음.`,
+      );
     return text(
       `반영 완료: ${r.result.applied}건 적용, ${r.result.rejected.length}건 거부. ` +
         `(영향 ${r.impact.level}, newRev=${r.rev}, snapshot=${r.snapshotSha})`,
@@ -302,7 +335,7 @@ server.tool(
   { limit: z.number().default(10) },
   async ({ limit }) => {
     const bp = store.get();
-    const reports = detectMissing(bp);
+    const reports = cachedMissing(bp);
     if (reports.length === 0) return text("결여 슬롯 없음 — 모든 필수 슬롯 충족.");
     const lines: string[] = [];
     lines.push("# Refine — Missing Slots Context");
@@ -361,7 +394,7 @@ server.tool(
     const policy = currentPolicy;
     const audit = store.tailAudit(10_000);
     const stats = computeCompliance(audit, 60 * 60 * 1000);
-    const missingReports = detectMissing(bp);
+    const missingReports = cachedMissing(bp);
     const pending = store.listPending();
     const conflicts = findConflicts(pending);
     const snapshots = store.listSnapshots();
@@ -467,7 +500,7 @@ server.tool(
     const audit = store.tailAudit(10_000);
     const stats = computeCompliance(audit, windowMinutes * 60 * 1000);
     const bp = store.get();
-    const missingReports = detectMissing(bp);
+    const missingReports = cachedMissing(bp);
     const pending = store.listPending();
 
     const pct = (x: number) => (Number.isNaN(x) ? "—" : (x * 100).toFixed(1) + "%");
