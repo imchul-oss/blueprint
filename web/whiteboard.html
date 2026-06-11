@@ -4827,7 +4827,9 @@ function render() {
     fr.style.left = `${p.x}px`; fr.style.top = `${p.y}px`;
     fr.style.width = `${w}px`; fr.style.height = `${h}px`;
     const hue = (ROLE_HSL_DEFAULTS.section || [220, 70, 60]);
-    fr.style.setProperty("--frame-color", `${hue[0]}, ${hue[1]}%, ${hue[2]}%`);
+    // color-mix()/color: 소비처가 전부 '색상값'을 기대 — HSL 트리플을 넘기면 var 치환이
+    // 실패해 border 쇼트핸드 전체가 무효화(점선 윤곽 소실 버그). 반드시 완전한 색으로.
+    fr.style.setProperty("--frame-color", `hsl(${hue[0]} ${hue[1]}% ${hue[2]}%)`);
     fr.innerHTML = `
       <div class="frame-title"
            ondblclick="event.stopPropagation();startFrameTitleEdit(event, '${n.id}')"
