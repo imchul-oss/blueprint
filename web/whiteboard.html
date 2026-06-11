@@ -89,7 +89,7 @@
     --color-screen-element: #A8A8A8;   /* gray-300 */
     --color-component: #4F4F4F;        /* gray-500 */
     --color-data-entity: #4F4F4F;
-    --color-section: #D7D7D7;          /* gray-200 — frame 옅게 */
+    --color-section: var(--accent);    /* 그룹 윤곽 — 대표 민트 (비활성 시에도). 설정 role_section 으로 변경 가능 */
     --color-claim: #2F2F2F;            /* gray-600 — 주장 강조 */
     --color-note: #A8A8A8;             /* gray-300 — 메모 */
 
@@ -1268,15 +1268,15 @@
   .frame {
     position: absolute;
     background: color-mix(in srgb, var(--frame-color, var(--panel-border)) 6%, transparent);
-    border: 1.5px dashed color-mix(in srgb, var(--frame-color, var(--panel-border)) 50%, transparent);
+    border: var(--frame-border-w, 1.5px) var(--frame-border-style, dashed) color-mix(in srgb, var(--frame-color, var(--panel-border)) 50%, transparent);
     border-radius: 12px;
     z-index: 5;
     user-select: none;
     transition: border-color var(--dur) var(--ease);
   }
   .frame:hover { border-color: color-mix(in srgb, var(--frame-color, var(--panel-border)) 75%, transparent); }
-  /* 선택된 frame — accent 색만 강조, 점선 유지 */
-  .frame.sel { border-style: dashed; border-color: var(--accent); background: var(--accent-glow); }
+  /* 선택된 frame — accent 색만 강조, 윤곽 스타일은 사용자 설정 따름 */
+  .frame.sel { border-style: var(--frame-border-style, dashed); border-color: var(--accent); background: var(--accent-glow); }
   /* drop 후보 frame — warn 톤 dashed outline + 점멸 */
   .frame.hover-target {
     border-style: dashed !important;
@@ -4826,10 +4826,9 @@ function render() {
     fr.setAttribute("data-frame-id", n.id);
     fr.style.left = `${p.x}px`; fr.style.top = `${p.y}px`;
     fr.style.width = `${w}px`; fr.style.height = `${h}px`;
-    const hue = (ROLE_HSL_DEFAULTS.section || [220, 70, 60]);
-    // color-mix()/color: 소비처가 전부 '색상값'을 기대 — HSL 트리플을 넘기면 var 치환이
-    // 실패해 border 쇼트핸드 전체가 무효화(점선 윤곽 소실 버그). 반드시 완전한 색으로.
-    fr.style.setProperty("--frame-color", `hsl(${hue[0]} ${hue[1]}% ${hue[2]}%)`);
+    // role 토큰 체인 소비 — 기본 민트(--color-section→--accent), 설정 role_section 변경 시 함께 반영.
+    // (트리플 금지: color-mix 소비처는 완전한 '색상값'만 — 트리플이면 border 전체 무효화)
+    fr.style.setProperty("--frame-color", "var(--color-section)");
     fr.innerHTML = `
       <div class="frame-title"
            ondblclick="event.stopPropagation();startFrameTitleEdit(event, '${n.id}')"
@@ -4995,6 +4994,10 @@ function drawEdges() {
     if (e.type === "parent") {
       const toN = nodeById(e.to);
       if (toN && toN.role === "section") {
+        // 드래그 중인 카드는 containment 가 드롭 시점에 재평가됨 — 그 사이 엣지를
+        // 그렸다 지우면 번쩍임만 남으므로 드래그 동안은 무조건 생략 (hover-target 이 행선지 표시)
+        const draggingFrom = dragNodeId && (e.from === dragNodeId || (_multiSel.size > 1 && _multiSel.has(e.from)));
+        if (draggingFrom) return "";
         const fp = pos[e.to];
         const fw = toN.attrs?.frame?.width || 520, fh = toN.attrs?.frame?.height || 360;
         if (fp && ca.x >= fp.x && ca.x <= fp.x + fw && ca.y >= fp.y && ca.y <= fp.y + fh) return "";
@@ -8823,6 +8826,13 @@ const UI_SCHEMA = {
       { value: "top-left",     label: "좌상단" },
       { value: "hidden",       label: "숨김" },
     ]},
+    { key: "frameBorderStyle", label: "그룹(frame) 윤곽선", type: "select", def: "dashed", options: [
+      { value: "dashed", label: "점선 (기본)" },
+      { value: "solid",  label: "실선" },
+      { value: "dotted", label: "도트" },
+      { value: "none",   label: "없음 — 배경 틴트만" },
+    ]},
+    { key: "frameBorderWidth", label: "그룹 윤곽선 굵기(px)", type: "range", min: 1, max: 4, step: 0.5, def: 1.5 },
   ],
   role: [
     "product","goal","persona","metric","requirement","feature","flow","screen","component","data-entity","section","claim","note"
@@ -8850,7 +8860,7 @@ const ROLE_HSL_DEFAULTS = {
   "screen-element":[0, 0, 66],     /* gray-300 #A8A8A8 */
   component:      [0, 0, 31],
   "data-entity":  [0, 0, 31],
-  section:        [0, 0, 84],      /* gray-200 #D7D7D7 */
+  section:        [161, 53, 49],   /* accent mint #3ABF94 — 그룹 대표색 */
   claim:          [0, 0, 18],      /* gray-600 #2F2F2F */
   note:           [0, 0, 66],
 };
@@ -9052,6 +9062,9 @@ function applyUI() {
       if (Array.isArray(hsl)) r.setProperty(`--color-${r2}`, `hsl(${hsl[0]}, ${hsl[1]}%, ${hsl[2]}%)`);
     }
   }
+  // 그룹(frame) 윤곽선 — 스타일·굵기 사용자 설정
+  r.setProperty("--frame-border-style", UI.frameBorderStyle || "dashed");
+  r.setProperty("--frame-border-w", (UI.frameBorderWidth ?? 1.5) + "px");
   // 패널 너비를 sidebars 에 즉시 반영
   document.querySelectorAll("#left-panel, #right-panel").forEach(el => el.style.width = UI.panelWidth + "px");
   // 노드 너비 — 일부 인라인 스타일 의존이라 render() 호출 권장
