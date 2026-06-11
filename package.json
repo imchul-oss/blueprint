@@ -12,6 +12,7 @@
     "test:mcp": "npm run build && node dist/test-mcp-logic.js",
     "test:mcp:e2e": "npm run build && node dist/test-mcp-e2e.js",
     "test:mcp:all": "npm run build && node dist/test-mcp-logic.js && node dist/test-mcp-e2e.js",
+    "test:purpose": "npm run build && node purpose-e2e.mjs",
     "mcp": "node dist/mcp-server.js",
     "build:server": "node node_modules/typescript/bin/tsc -p tsconfig.server.json",
     "server": "node dist/server/index.js",
