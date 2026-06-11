@@ -39,16 +39,36 @@ export function extractBlueprintFromText(text: string): Omit<Blueprint, "meta"> 
 
   const getCleanText = (s: string) => s.trim().replace(/^[-*+]\s*/, "").trim();
 
+  // Round-trip id 보존: export 가 심은 `<!-- @ubp: #id -->` 주석을 인식해 같은 id 재사용.
+  // (id 가 보존되어야 재import 시 이력·anchor·traces-to 가 끊기지 않는다)
+  const ID_RE = /<!--\s*@ubp:\s*#([\w-]+)\s*-->/;
+  const usedIds = new Set<string>([rootId]);
+  let carriedId: string | undefined; // 주석 단독 라인 → 다음 의미 라인에 적용
+  const claimId = (explicit: string | undefined, fallback: string): string => {
+    if (explicit && !usedIds.has(explicit)) { usedIds.add(explicit); return explicit; }
+    usedIds.add(fallback);
+    return fallback;
+  };
+
   for (const line of lines) {
-    const trimmed = line.trim();
+    let trimmed = line.trim();
     if (!trimmed) continue;
+
+    let explicitId = carriedId;
+    carriedId = undefined;
+    const idm = trimmed.match(ID_RE);
+    if (idm) {
+      explicitId = idm[1];
+      trimmed = trimmed.replace(ID_RE, "").trim();
+      if (!trimmed) { carriedId = explicitId; continue; }
+    }
 
     // Handle Headings (e.g., # Product Title or ## Feature Area)
     const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
       const level = headingMatch[1].length;
       const title = headingMatch[2].trim();
-      const id = `n_h_${++seq}`;
+      const id = claimId(explicitId, `n_h_${++seq}`);
       
       // Determine role based on title keywords or default to section/feature
       let role: NodeRole = "section";
@@ -83,15 +103,21 @@ export function extractBlueprintFromText(text: string): Omit<Blueprint, "meta"> 
     // Handle List Items (e.g. - [feature] Login Screen: Allow user to authenticate)
     const listMatch = trimmed.match(/^[-*+]\s+(.*)$/);
     if (listMatch) {
-      const itemContent = listMatch[1].trim();
-      const bracketMatch = itemContent.match(/^\[([^\]]+)\]\s*(.+)$/);
-      
+      let itemContent = listMatch[1].trim();
+      // outline export 의 missing 마커는 메타 정보 — 본문에서 제거 (왕복 시 재계산됨)
+      itemContent = itemContent.replace(/_⚠missing:[^_]*_/g, "").trim();
+      // `[role]` 와 outline export 의 `**[role/P0/status]**` 둘 다 허용
+      const bracketMatch = itemContent.match(/^\*{0,2}\[([^\]]+)\]\*{0,2}\s*(.+)$/);
+
       let role: NodeRole = "feature";
       let content = itemContent;
-      
+      let priority: string | undefined;
+
       if (bracketMatch) {
-        const rawRole = bracketMatch[1].toLowerCase().trim();
+        const segs = bracketMatch[1].split("/").map((s) => s.trim());
+        const rawRole = segs[0].toLowerCase();
         role = roleMap[rawRole] || "feature";
+        priority = segs.find((s) => /^p[0-3]$/i.test(s))?.toUpperCase();
         content = bracketMatch[2];
       } else {
         // Keyword detection in line
@@ -121,13 +147,16 @@ export function extractBlueprintFromText(text: string): Omit<Blueprint, "meta"> 
         }
       }
 
-      const id = `n_item_${++seq}`;
+      const id = claimId(explicitId, `n_item_${++seq}`);
       const node: BlueprintNode = {
         id,
         role,
         title,
         status: "draft"
       };
+      if (priority) {
+        node.priority = priority as BlueprintNode["priority"];
+      }
       if (body) {
         node.body = body;
       }

@@ -73,6 +73,12 @@ export interface ConfirmResult {
 export interface StoreOptions {
   /** authz 정책. 미설정 시 모든 actor 통과(기존 동작 보존). */
   authz?: AuthzPolicy;
+  /**
+   * true 면 propose 한 actor 가 스스로 confirm 하는 것을 거부 (BLUEPRINT.md NFR:
+   * "confirm 은 사람 actor 권장, 에이전트 자가승인 금지"의 강제 장치).
+   * 기본 false — 기존 동작·단일 사용자 흐름 보존.
+   */
+  forbidSelfConfirm?: boolean;
 }
 
 export type StoreEvent =
@@ -88,6 +94,7 @@ export class BlueprintStore {
   private auditPath?: string;
   private snapshotDir?: string;
   private authz?: Required<AuthzPolicy>;
+  private forbidSelfConfirm = false;
   private bus = new EventEmitter();
   /** 마지막으로 읽거나 쓴 파일 mtime(ms). 외부(웹 FileStore 등) 변경 감지용. */
   private lastMtimeMs?: number;
@@ -106,6 +113,7 @@ export class BlueprintStore {
     if (opts.authz) {
       this.authz = { ...DEFAULT_AUTHZ, ...opts.authz };
     }
+    this.forbidSelfConfirm = opts.forbidSelfConfirm ?? false;
     this.path = path;
     if (path) {
       const dir = dirname(path);
@@ -349,6 +357,18 @@ export class BlueprintStore {
         kind: "reject",
         proposalId,
         note: `forbidden_confirm (role=${actorObj?.role ?? "none"})`,
+      });
+      return null;
+    }
+
+    // 에이전트 자가승인 차단 — propose 한 actor 와 confirm actor 가 같으면 거부 (opt-in).
+    if (this.forbidSelfConfirm && p.actor === actor) {
+      this.writeAudit({
+        ts: Date.now(),
+        actor,
+        kind: "reject",
+        proposalId,
+        note: `self_confirm_forbidden (proposer=${p.actor})`,
       });
       return null;
     }

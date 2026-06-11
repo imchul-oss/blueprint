@@ -254,6 +254,11 @@
     50%      { box-shadow: 0 0 0 5px rgba(245, 158, 11, 0); }
   }
   @media (prefers-reduced-motion: reduce) { #header .brand .store-badge.needs-attn { animation: none; } }
+  /* 제안 dry-run 고스트 미리보기 — 승인하면 그래프가 어떻게 되는지 confirm 전에 표시 */
+  .node.ghost-add    { opacity: 0.55; border: 1.5px dashed var(--status-confirmed) !important; pointer-events: none; }
+  .node.ghost-remove { outline: 2px dashed var(--danger, #e5484d); outline-offset: 2px; opacity: 0.45; }
+  .node.ghost-remove .title { text-decoration: line-through; }
+  .node.ghost-update { outline: 2px dashed var(--warn); outline-offset: 2px; }
   #header .brand #save-indicator { font-size: 10.5px; color: var(--muted); }
   .actions-row { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
   .actions-row .sep { width: 1px; height: 20px; background: var(--panel-border); margin: 0 var(--s-1); }
@@ -1349,6 +1354,7 @@
     UBP Whiteboard
     <span class="version" id="rev-pill">rev 1</span>
     <button class="store-badge tier-local" id="store-badge" onclick="openStorePanel()" aria-label="저장 위치">⚪ <span id="store-badge-label">이 브라우저</span></button>
+    <button class="store-badge tier-local" id="ws-badge" onclick="openWorkspaceSwitcher()" aria-label="워크스페이스" data-tooltip="워크스페이스 전환&#10;웹·MCP 가 같은 ID 로 같은 BP 를 공유">ws</button>
     <span id="save-indicator"></span>
   </div>
   <div class="actions-row">
@@ -1371,6 +1377,12 @@
     </button>
     <button class="icon" onclick="toggleConflictPanel()" id="conflict-btn" data-tooltip="충돌 검토&#10;대기 중 제안 간 anchor 충돌 표시" aria-label="충돌 검토">
       <svg class="ic"><use href="#i-merge"/></svg>
+    </button>
+    <button class="icon" onclick="openSnapshotTimeline()" data-tooltip="스냅샷 타임라인&#10;자동/수동 스냅샷 diff·복원 (J4: 이력 한 줄도 안 잃기)" aria-label="스냅샷 타임라인">
+      <svg class="ic"><use href="#i-clock"/></svg>
+    </button>
+    <button class="icon" onclick="openHealthPanel()" data-tooltip="Graph Health&#10;노드·미완료·승인 추이 (성공지표 baseline)" aria-label="Graph Health">
+      <svg class="ic"><use href="#i-grid"/></svg>
     </button>
     <button class="icon" onclick="scanAnchorsInBrowser()" data-tooltip="코드 앵커 스캔&#10;로컬 폴더의 @ubp-anchor 마커를 스캔해 코드↔노드 추적(traces-to) 자동 제안 (Chrome/Edge)" aria-label="코드 앵커 스캔">
       <svg class="ic"><use href="#i-link"/></svg>
@@ -1734,6 +1746,9 @@
       </button>
       <button onclick="exportLlmsTxt()" title="llms.txt 형식 — LLM 에이전트에 자기 설명 (xyflow 패턴)">
         <svg class="ic"><use href="#i-export"/></svg> llms.txt
+      </button>
+      <button onclick="exportHarnessMd()" title="하네스/정책 골격 — claim·requirement 를 CLAUDE.md·system prompt 구조로 직렬화 (산출물 완성은 모델이)">
+        <svg class="ic"><use href="#i-export"/></svg> 하네스.md
       </button>
     </div>
     <div id="outline-body"></div>
@@ -2172,6 +2187,7 @@
     <div style="display:flex;gap:var(--s-2);justify-content:flex-end;margin-top:var(--s-4);flex-wrap:wrap;">
       <button onclick="resolveDivergence('cancel')">취소</button>
       <button onclick="resolveDivergence('load-disk')">디스크 버전 불러오기<br><span style="font-size:10px;font-weight:400;">(내 변경 버림)</span></button>
+      <button onclick="resolveDivergence('cherry-pick')">노드별 선택 머지<br><span style="font-size:10px;font-weight:400;">(아무것도 안 버림)</span></button>
       <button class="primary" onclick="resolveDivergence('force-mine')">내 버전으로 덮어쓰기<br><span style="font-size:10px;font-weight:400;">(외부 변경 버림)</span></button>
     </div>
   </div>
@@ -2265,6 +2281,7 @@ function nodeById(id) {
 function audit(kind, entry) {
   auditHistory.push({ ts: Date.now(), kind, ...entry });
   if (auditHistory.length > 200) auditHistory.shift();
+  try { recordHealthDaily(kind); } catch (_) {} // Graph Health 일별 적재 (실패해도 본 기능 무영향)
 }
 
 function saveState(intent = "edit") {
@@ -2810,19 +2827,28 @@ async function disconnectFolder() {
 
 // TD3: 분기(충돌) 다이얼로그 — onFileConflict 에 주입. 침묵 덮어쓰기 절대 금지.
 let _pendingDivergence = null;
+// 노드 단위 구조 diff — 분기 다이얼로그 요약과 cherry-pick 머지가 공유.
+function computeBpDiff(localBp, remoteBp) {
+  const l = new Map((localBp.nodes || []).map(n => [n.id, n]));
+  const r = new Map((remoteBp?.nodes || []).map(n => [n.id, n]));
+  const onlyRemote = [], onlyLocal = [], differs = [];
+  for (const [id, n] of r) if (!l.has(id)) onlyRemote.push(n);
+  for (const [id, n] of l) {
+    const o = r.get(id);
+    if (!o) onlyLocal.push(n);
+    else if (JSON.stringify(o) !== JSON.stringify(n)) differs.push({ local: n, remote: o });
+  }
+  return { onlyRemote, onlyLocal, differs };
+}
+
 // 분기 시 "뭘 잃는지" 보이게 — 노드 추가/삭제/변경을 제목 단위로 요약 (자동 머지는 여전히 안 함)
 function bpDiffSummary(localBp, remoteBp) {
   try {
     if (!remoteBp || !Array.isArray(remoteBp.nodes)) return "";
-    const l = new Map((localBp.nodes || []).map(n => [n.id, n]));
-    const r = new Map(remoteBp.nodes.map(n => [n.id, n]));
-    const onlyRemote = [], onlyLocal = [], differs = [];
-    for (const [id, n] of r) if (!l.has(id)) onlyRemote.push(n.title || id);
-    for (const [id, n] of l) {
-      const o = r.get(id);
-      if (!o) onlyLocal.push(n.title || id);
-      else if (JSON.stringify(o) !== JSON.stringify(n)) differs.push(n.title || id);
-    }
+    const d = computeBpDiff(localBp, remoteBp);
+    const onlyRemote = d.onlyRemote.map(n => n.title || n.id);
+    const onlyLocal = d.onlyLocal.map(n => n.title || n.id);
+    const differs = d.differs.map(x => x.local.title || x.local.id);
     const edgeDelta = (remoteBp.edges?.length ?? 0) - (localBp.edges?.length ?? 0);
     const cap = a => a.slice(0, 5).map(esc).join(", ") + (a.length > 5 ? ` 외 ${a.length - 5}개` : "");
     const parts = [];
@@ -2856,6 +2882,7 @@ async function resolveDivergence(action) {
   const info = _pendingDivergence; _pendingDivergence = null;
   document.getElementById("store-divergence").close();
   if (!info || action === "cancel") return;
+  if (action === "cherry-pick") { openCherryPickMerge(info); return; }
   if (action === "load-disk") {
     await loadBP(); // 파일에서 재로드 + lastDiskRev 갱신
     selId = null; selectedEdgeId = null; _multiSel.clear();
@@ -2871,6 +2898,88 @@ async function resolveDivergence(action) {
   }
   updateStoreBadge();
 }
+// ============ 노드 단위 cherry-pick 머지 — 양자택일의 데이터 손실 제거 ============
+// 자동 머지가 아님: 모든 행을 사람이 보고 고른 뒤에만 합쳐진다 (침묵 덮어쓰기 금지 원칙 유지).
+function openCherryPickMerge(info) {
+  const d = computeBpDiff(BP, info.disk);
+  if (d.onlyRemote.length + d.onlyLocal.length + d.differs.length === 0) {
+    toast("노드 차이 없음 — 엣지/메타만 다름. 외부 버전 로드를 권장.", "info"); return;
+  }
+  let dlg = document.getElementById("cherry-pick-dialog");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "cherry-pick-dialog";
+    document.body.appendChild(dlg);
+  }
+  const row = (name, checked, label, sub) => `
+    <label style="display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border:1px solid var(--border);border-radius:8px;cursor:pointer;">
+      <input type="checkbox" name="${name}" ${checked ? "checked" : ""} style="margin-top:2px;">
+      <span style="font-size:12px;line-height:1.5;"><b>${esc(label)}</b><br><span style="opacity:.7">${sub}</span></span>
+    </label>`;
+  const radio = (name, label, localTitle) => `
+    <div style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:12px;line-height:1.5;">
+      <b>${esc(label)}</b> — 내용이 다름<br>
+      <label style="margin-right:12px;cursor:pointer;"><input type="radio" name="${name}" value="mine" checked> 내 버전 유지</label>
+      <label style="cursor:pointer;"><input type="radio" name="${name}" value="theirs"> 외부 버전 사용</label>
+    </div>`;
+  dlg.innerHTML = `
+    <div style="padding:var(--s-4);min-width:460px;max-width:600px;max-height:70vh;overflow:auto;">
+      <h4 style="margin:0 0 var(--s-2);">노드별 선택 머지 (rev ${info.localRev} ↔ 외부 rev ${info.diskRev})</h4>
+      <p style="font-size:11.5px;opacity:.75;margin:0 0 var(--s-2);">체크/선택한 대로 합쳐 저장합니다. 엣지는 양쪽 합집합(끊긴 끝점 제외).</p>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        ${d.onlyRemote.map((n, i) => row(`cp-r-${i}`, true, n.title || n.id, "외부에만 있음 — 체크 시 가져옴")).join("")}
+        ${d.onlyLocal.map((n, i) => row(`cp-l-${i}`, true, n.title || n.id, "내 쪽에만 있음 — 체크 시 유지")).join("")}
+        ${d.differs.map((x, i) => radio(`cp-d-${i}`, x.local.title || x.local.id)).join("")}
+      </div>
+      <div style="display:flex;gap:var(--s-2);justify-content:flex-end;margin-top:var(--s-3);">
+        <button onclick="this.closest('dialog').close()">취소</button>
+        <button class="primary" id="cherry-pick-apply">머지 적용</button>
+      </div>
+    </div>`;
+  dlg.querySelector("#cherry-pick-apply").onclick = () => { applyCherryPick(dlg, info, d); };
+  dlg.showModal();
+}
+
+async function applyCherryPick(dlg, info, d) {
+  saveState("cherry-pick-merge");
+  // base = 외부 버전 클론 → 사람이 고른 행만 보정
+  const merged = JSON.parse(JSON.stringify(info.disk));
+  const mNodes = new Map(merged.nodes.map(n => [n.id, n]));
+  d.onlyRemote.forEach((n, i) => {
+    if (!dlg.querySelector(`input[name="cp-r-${i}"]`).checked) mNodes.delete(n.id);
+  });
+  d.onlyLocal.forEach((n, i) => {
+    if (dlg.querySelector(`input[name="cp-l-${i}"]`).checked) mNodes.set(n.id, JSON.parse(JSON.stringify(n)));
+  });
+  d.differs.forEach((x, i) => {
+    const pick = dlg.querySelector(`input[name="cp-d-${i}"]:checked`)?.value || "mine";
+    if (pick === "mine") mNodes.set(x.local.id, JSON.parse(JSON.stringify(x.local)));
+  });
+  merged.nodes = [...mNodes.values()];
+  // 엣지 합집합 — 양 끝점이 살아있는 것만, from::to::type 중복 제거
+  const ids = new Set(merged.nodes.map(n => n.id));
+  const eKey = e => `${e.from}::${e.to}::${e.type}`;
+  const eMap = new Map();
+  for (const e of [...(info.disk.edges || []), ...(BP.edges || [])]) {
+    if (ids.has(e.from) && ids.has(e.to) && !eMap.has(eKey(e))) eMap.set(eKey(e), e);
+  }
+  merged.edges = [...eMap.values()];
+  merged.meta.rev = Math.max(info.diskRev, info.localRev) + 1;
+  // 새로 들어온 노드의 좌표 기본값
+  let slot = 0;
+  for (const n of merged.nodes) if (!pos[n.id]) pos[n.id] = { x: 540, y: 120 + (slot++ % 8) * 70 };
+  BP = merged;
+  if (typeof activeStore._setLastDiskRev === "function") activeStore._setLastDiskRev(info.diskRev);
+  audit("confirm", { intent: `cherry-pick merge (rev ${info.localRev}+${info.diskRev}→${merged.meta.rev})`, actor: "user" });
+  dlg.close();
+  selId = null; selectedEdgeId = null; _multiSel.clear();
+  render();
+  document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+  await saveBP({ snapshot: true });
+  updateStoreBadge();
+  toast(`선택 머지 완료 · rev ${BP.meta.rev} (노드 ${BP.nodes.length}개)`, "ok");
+}
+
 onFileConflict = showDivergenceDialog;
 onCloudConflict = showDivergenceDialog;
 
@@ -2977,6 +3086,169 @@ async function loadBPFromCloud() {
     return;
   }
   await activateCloudStore();
+}
+
+// ============ #11 스냅샷 타임라인 — diff·복원을 사용자가 체감 (J4) ============
+// 자동 스냅샷(LS ring)은 어느 티어에서도 브라우저에 남는 안전망. 수동 스냅샷 버튼 포함.
+function pushLocalSnapshot(label) {
+  const snaps = loadSnapshotsRaw();
+  snaps.unshift({ ts: Date.now(), rev: BP.meta?.rev || 1, title: (label || BP.meta?.title || "BP"), bp: JSON.stringify(BP), pos: JSON.stringify(pos) });
+  while (snaps.length > SNAPSHOT_MAX) snaps.pop();
+  try { localStorage.setItem(LS_SNAPSHOTS_KEY, JSON.stringify(snaps)); } catch (e) { toast("스냅샷 저장 실패(용량?): " + e.message, "error"); return; }
+  toast(`스냅샷 저장 (rev ${BP.meta.rev})`, "ok");
+}
+function openSnapshotTimeline() {
+  const snaps = loadSnapshotsRaw();
+  let dlg = document.getElementById("snap-timeline-dialog");
+  if (!dlg) { dlg = document.createElement("dialog"); dlg.id = "snap-timeline-dialog"; document.body.appendChild(dlg); }
+  const rows = snaps.map((s, i) => {
+    const dt = new Date(s.ts);
+    const when = `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;
+    return `<div style="display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:12px;">
+      <span style="flex:1"><b>rev ${s.rev}</b> · ${when} · ${esc(s.title || "")}</span>
+      <button style="font-size:11px" onclick="showSnapDiff(${i})">diff</button>
+      <button style="font-size:11px" onclick="restoreLocalSnapshot(${i})">복원</button>
+    </div>`;
+  }).join("");
+  dlg.innerHTML = `
+    <div style="padding:var(--s-4);min-width:460px;max-width:580px;max-height:70vh;overflow:auto;">
+      <h4 style="margin:0 0 var(--s-2);">스냅샷 타임라인 <span style="font-size:11px;opacity:.6">(이 브라우저 자동/수동 스냅샷 · 최근 ${SNAPSHOT_MAX}개)</span></h4>
+      <div style="display:flex;flex-direction:column;gap:6px;">${rows || '<p style="font-size:12px;opacity:.7">스냅샷 없음 — 저장 시(rev 변화) 자동 적재되거나 아래 버튼으로 수동 저장.</p>'}</div>
+      <div id="snap-diff-out" style="margin-top:var(--s-2);"></div>
+      <div style="display:flex;gap:var(--s-2);justify-content:flex-end;margin-top:var(--s-3);">
+        <button onclick="pushLocalSnapshot();openSnapshotTimeline()">지금 스냅샷</button>
+        <button onclick="this.closest('dialog').close()">닫기</button>
+      </div>
+    </div>`;
+  dlg.showModal();
+}
+function showSnapDiff(i) {
+  const s = loadSnapshotsRaw()[i];
+  if (!s) return;
+  const snapBp = JSON.parse(s.bp);
+  const html = bpDiffSummary(BP, snapBp);
+  document.getElementById("snap-diff-out").innerHTML =
+    html || `<div style="font-size:12px;opacity:.7;padding:6px;">rev ${s.rev} 와 현재 — 노드 차이 없음 (메타/엣지/좌표만 다를 수 있음)</div>`;
+}
+function restoreLocalSnapshot(i) {
+  const s = loadSnapshotsRaw()[i];
+  if (!s) return;
+  openConfirm("스냅샷 복원", `rev ${s.rev} (${new Date(s.ts).toLocaleString()}) 로 되돌릴까요?<br>현재 상태는 undo 스택과 새 스냅샷에 보존됩니다.`, () => {
+    saveState("snapshot-restore");
+    pushLocalSnapshot("복원 직전 백업");
+    const snapBp = JSON.parse(s.bp);
+    snapBp.meta.rev = Math.max(BP.meta.rev, snapBp.meta.rev) + 1; // rev 단조 유지
+    BP = snapBp;
+    try { const p = JSON.parse(s.pos || "{}"); for (const k of Object.keys(pos)) delete pos[k]; Object.assign(pos, p); } catch(_){}
+    selId = null; selectedEdgeId = null; _multiSel.clear();
+    audit("restore", { intent: `local snapshot rev ${s.rev}`, rev: BP.meta.rev, actor: "user" });
+    render();
+    document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
+    saveBP({ snapshot: false });
+    document.getElementById("snap-timeline-dialog")?.close();
+    toast(`복원됨 → rev ${BP.meta.rev}`, "ok");
+  });
+}
+
+// ============ #12 Graph Health 시계열 — §6 성공지표 baseline 적재 ============
+const LS_HEALTH_KEY = "ubp_health_daily"; // [{d, nodes, edges, missing, confirms, proposes, rejects}] 최근 90일
+function recordHealthDaily(kind) {
+  try {
+    const d = new Date().toISOString().slice(0, 10);
+    const ring = JSON.parse(localStorage.getItem(LS_HEALTH_KEY) || "[]");
+    let row = ring.find(r => r.d === d);
+    if (!row) { row = { d, nodes: 0, edges: 0, missing: 0, confirms: 0, proposes: 0, rejects: 0 }; ring.push(row); }
+    row.nodes = BP.nodes.length;
+    row.edges = BP.edges.length;
+    row.missing = BP.nodes.reduce((a, n) => a + (missingOf(n).length > 0 ? 1 : 0), 0);
+    if (kind === "confirm") row.confirms++;
+    else if (kind === "propose") row.proposes++;
+    else if (kind === "reject") row.rejects++;
+    while (ring.length > 90) ring.shift();
+    localStorage.setItem(LS_HEALTH_KEY, JSON.stringify(ring));
+  } catch (_) { /* 통계는 본 기능을 방해하지 않는다 */ }
+}
+function sparkline(values, w, h, color) {
+  if (values.length === 0) return "";
+  const max = Math.max(...values, 1);
+  const pts = values.map((v, i) => `${(i / Math.max(values.length - 1, 1)) * w},${h - (v / max) * (h - 2) - 1}`).join(" ");
+  return `<svg width="${w}" height="${h}" style="display:block"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+function openHealthPanel() {
+  const ring = JSON.parse(localStorage.getItem(LS_HEALTH_KEY) || "[]");
+  let dlg = document.getElementById("health-dialog");
+  if (!dlg) { dlg = document.createElement("dialog"); dlg.id = "health-dialog"; document.body.appendChild(dlg); }
+  const metric = (label, key, color) => {
+    const vals = ring.map(r => r[key] || 0);
+    const cur = vals.length ? vals[vals.length - 1] : 0;
+    return `<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;">
+      <span style="font-size:12px;width:130px;"><b>${label}</b><br><span style="font-size:16px;">${cur}</span></span>
+      <span style="flex:1">${sparkline(vals, 280, 36, color)}</span>
+    </div>`;
+  };
+  const totalConfirms = ring.reduce((a, r) => a + (r.confirms || 0), 0);
+  const totalRejects = ring.reduce((a, r) => a + (r.rejects || 0), 0);
+  dlg.innerHTML = `
+    <div style="padding:var(--s-4);min-width:480px;max-width:560px;">
+      <h4 style="margin:0 0 var(--s-2);">Graph Health <span style="font-size:11px;opacity:.6">(일 단위 · 최근 ${ring.length}일 · 이 브라우저 적재)</span></h4>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        ${metric("노드 수", "nodes", "var(--accent)")}
+        ${metric("미완료 노드", "missing", "var(--warn)")}
+        ${metric("승인(confirm)/일", "confirms", "#2ea043")}
+        ${metric("제안(propose)/일", "proposes", "#3b82f6")}
+      </div>
+      <p style="font-size:11.5px;opacity:.7;margin:var(--s-2) 0 0;">누적 승인 ${totalConfirms} · 거절 ${totalRejects} — §6 성공지표(수동 보정율·정합률) baseline 은 100건 누적 시점에 확정.</p>
+      <div style="display:flex;justify-content:flex-end;margin-top:var(--s-2);">
+        <button onclick="this.closest('dialog').close()">닫기</button>
+      </div>
+    </div>`;
+  dlg.showModal();
+}
+
+// ============ #13 워크스페이스 스위처 — 웹·MCP 공유 키 전환 ============
+const LS_WS_RECENT = "ubp_ws_recent";
+function updateWsBadge() {
+  const el = document.getElementById("ws-badge");
+  if (el) el.textContent = `ws ${((UI.workspaceId || "").trim()) || "default"}`;
+}
+function openWorkspaceSwitcher() {
+  const cur = ((UI.workspaceId || "").trim()) || "default";
+  let recent = [];
+  try { recent = JSON.parse(localStorage.getItem(LS_WS_RECENT) || "[]"); } catch(_){}
+  let dlg = document.getElementById("ws-switch-dialog");
+  if (!dlg) { dlg = document.createElement("dialog"); dlg.id = "ws-switch-dialog"; document.body.appendChild(dlg); }
+  dlg.innerHTML = `
+    <div style="padding:var(--s-4);min-width:380px;">
+      <h4 style="margin:0 0 var(--s-2);">워크스페이스 전환</h4>
+      <p style="font-size:11.5px;opacity:.75;margin:0 0 var(--s-2);">웹과 MCP(<code>UBP_WORKSPACE_ID</code>)가 같은 ID 로 같은 BP 를 공유합니다. 현재: <b>${esc(cur)}</b></p>
+      <input id="ws-switch-input" type="text" value="${esc(cur)}" placeholder="default" style="width:100%;font-size:13px;padding:6px 8px;">
+      ${recent.filter(w => w !== cur).length ? `<div style="margin-top:8px;font-size:11.5px;opacity:.8;">최근: ${recent.filter(w => w !== cur).map(w => `<button style="font-size:11px;margin:2px" onclick="document.getElementById('ws-switch-input').value='${esc(w)}'">${esc(w)}</button>`).join("")}</div>` : ""}
+      <div style="display:flex;gap:var(--s-2);justify-content:flex-end;margin-top:var(--s-3);">
+        <button onclick="this.closest('dialog').close()">취소</button>
+        <button class="primary" onclick="applyWorkspaceSwitch()">전환</button>
+      </div>
+    </div>`;
+  dlg.showModal();
+}
+async function applyWorkspaceSwitch() {
+  const v = (document.getElementById("ws-switch-input").value || "").trim() || "default";
+  const prev = ((UI.workspaceId || "").trim()) || "default";
+  document.getElementById("ws-switch-dialog").close();
+  if (v === prev) { updateWsBadge(); return; }
+  UI.workspaceId = v;
+  saveUI();
+  let recent = [];
+  try { recent = JSON.parse(localStorage.getItem(LS_WS_RECENT) || "[]"); } catch(_){}
+  recent = [v, ...recent.filter(w => w !== v)].slice(0, 8);
+  try { localStorage.setItem(LS_WS_RECENT, JSON.stringify(recent)); } catch(_){}
+  updateWsBadge();
+  if (activeStore.tier === StoreTier.CLOUD) {
+    // 클라우드는 ws 가 곧 행 키 — 재연결로 해당 워크스페이스 로드
+    await activateCloudStore();
+    toast(`워크스페이스 전환: ${v} (클라우드 재연결)`, "ok");
+  } else {
+    toast(`워크스페이스 전환: ${v} — 클라우드 연결 시 이 ID 의 BP 를 공유합니다`, "ok");
+  }
 }
 
 function loadSnapshotsRaw() {
@@ -3724,6 +3996,9 @@ function renderProposals() {
         <button onclick="rejectProposal('${p.id}')">
           <svg class="ic"><use href="#i-x"/></svg> 거절
         </button>
+        <button onclick="previewProposal('${p.id}')" title="승인 시 그래프가 어떻게 변하는지 캔버스에 고스트로 표시">
+          ${_previewingProposalId === p.id ? "미리보기 해제" : "미리보기"}
+        </button>
       </div>
     </div>`;
   }).join("");
@@ -3732,6 +4007,7 @@ function renderProposals() {
 function confirmProposal(id) {
   const idx = proposals.findIndex(p => p.id === id);
   if (idx < 0) return;
+  if (_previewingProposalId) clearProposalPreview();
   const p = proposals[idx];
   if (p.baseRev !== BP.meta.rev) {
     toast(`rev 충돌(base=${p.baseRev}, cur=${BP.meta.rev}). 제안 폐기.`, "error");
@@ -3766,10 +4042,53 @@ function rejectProposal(id) {
   const idx = proposals.findIndex(p => p.id === id);
   if (idx < 0) return;
   const p = proposals[idx];
+  if (_previewingProposalId === id) clearProposalPreview();
   p.affected.forEach(nid => { const el = document.querySelector(`.node[data-id="${nid}"]`); if (el) el.classList.remove("blast-affected"); });
   proposals.splice(idx, 1);
   audit("reject", { proposalId: p.id, intent: p.intent, actor: "user" });
   renderProposals();
+}
+
+// ============ 제안 dry-run 고스트 미리보기 — confirm 전에 결과를 그래프로 본다 ============
+let _previewingProposalId = null;
+let _previewGhostEls = [];
+function clearProposalPreview() {
+  for (const el of _previewGhostEls) { try { el.remove(); } catch(_){} }
+  _previewGhostEls = [];
+  document.querySelectorAll(".node.ghost-remove").forEach(el => el.classList.remove("ghost-remove"));
+  document.querySelectorAll(".node.ghost-update").forEach(el => el.classList.remove("ghost-update"));
+  _previewingProposalId = null;
+}
+function previewProposal(id) {
+  if (_previewingProposalId === id) { clearProposalPreview(); renderProposals(); return; }
+  clearProposalPreview();
+  const p = proposals.find(x => x.id === id);
+  if (!p) return;
+  _previewingProposalId = id;
+  let ghostSlot = 0;
+  for (const op of p.ops) {
+    if (op.op === "add_node") {
+      const div = document.createElement("div");
+      div.className = "node ghost-add";
+      div.style.left = `${540 + (ghostSlot % 3) * 40}px`;
+      div.style.top = `${140 + ghostSlot * 70}px`;
+      div.innerHTML = `<div class="title" style="padding:8px 10px;font-size:12px;">+ ${esc(op.node.title || op.node.id)}</div>`;
+      canvasEl.appendChild(div);
+      _previewGhostEls.push(div);
+      ghostSlot++;
+    } else if (op.op === "remove_node") {
+      document.querySelector(`.node[data-id="${op.id}"]`)?.classList.add("ghost-remove");
+    } else if (op.op === "update_node") {
+      const el = document.querySelector(`.node[data-id="${op.id}"]`);
+      if (el) { el.classList.add("ghost-update"); el.title = `변경 예정: ${Object.keys(op.patch || {}).join(", ")}`; }
+    } else if (op.op === "remove_edge") {
+      document.querySelector(`.node[data-id="${op.edge.from}"]`)?.classList.add("ghost-update");
+      document.querySelector(`.node[data-id="${op.edge.to}"]`)?.classList.add("ghost-update");
+    }
+  }
+  p.affected.forEach(nid => document.querySelector(`.node[data-id="${nid}"]`)?.classList.add("blast-affected"));
+  renderProposals();
+  toast("미리보기: 초록 점선=추가 · 빨강=삭제 · 노랑=변경 (다시 누르면 해제)", "info");
 }
 
 // =================== CANVAS ===================
@@ -5139,8 +5458,70 @@ function showMissingCheck() {
   const box = document.getElementById("chat-messages");
   switchLeftTab("chat");
   const list = reports.map(r => `• <a href="#" onclick="event.preventDefault();selectNode('${r.n.id}')">${esc(r.n.title)}</a> <code>#${esc(r.n.id)}</code>: ${esc(r.m.join(", "))}`).join("<br>");
-  box.innerHTML += `<div class="msg ai"><div class="sender">미완료 검토</div>${reports.length}개 노드에 미완료 슬롯이 있습니다:<br><br>${list}</div>`;
+  box.innerHTML += `<div class="msg ai"><div class="sender">미완료 검토</div>${reports.length}개 노드에 미완료 슬롯이 있습니다:<br><br>${list}<br><br>` +
+    `<button onclick="openClarifyDialog()" style="font-size:11.5px;">✏️ 답해서 채우기 (clarify → 제안 생성)</button></div>`;
   box.scrollTop = box.scrollHeight;
+}
+
+// ============ Clarify 루프 — 빈 슬롯을 사람이 답하면 "채움 제안"이 생성된다 (J3: 추측 금지) ============
+// 입력값은 직접 반영되지 않고 proposals 큐로 들어가 confirm 게이트를 통과한다.
+function openClarifyDialog() {
+  const reports = BP.nodes.map(n => ({ n, m: missingOf(n) })).filter(r => r.m.length > 0);
+  if (reports.length === 0) { toast("미완료 0건", "ok"); return; }
+  let dlg = document.getElementById("clarify-dialog");
+  if (!dlg) { dlg = document.createElement("dialog"); dlg.id = "clarify-dialog"; document.body.appendChild(dlg); }
+  const fields = [];
+  let fi = 0;
+  for (const r of reports) {
+    for (const slot of r.m) {
+      if (slot === "supports-edge") {
+        fields.push(`<div style="font-size:12px;padding:6px 8px;border:1px dashed var(--border);border-radius:8px;opacity:.7;">
+          <b>${esc(r.n.title)}</b> · supports 엣지 필요 — 입력이 아니라 근거 노드와 연결하세요 (포트 드래그)</div>`);
+        continue;
+      }
+      const ph = slot === "priority" ? "P0~P3" : slot === "fields" ? "id, name, createdAt (콤마 구분)" : "값 입력 — 모르면 비워두세요";
+      fields.push(`<div style="font-size:12px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;">
+        <b>${esc(r.n.title)}</b> <code style="opacity:.6">#${esc(r.n.id)}</code> · <b>${esc(slot)}</b><br>
+        <input type="text" data-clarify-idx="${fi}" data-node="${esc(r.n.id)}" data-slot="${esc(slot)}" placeholder="${ph}"
+          style="width:100%;margin-top:4px;font-size:12px;padding:4px 6px;"></div>`);
+      fi++;
+    }
+  }
+  dlg.innerHTML = `
+    <div style="padding:var(--s-4);min-width:440px;max-width:560px;max-height:70vh;overflow:auto;">
+      <h4 style="margin:0 0 var(--s-2);">Clarify — 빈 슬롯 답하기</h4>
+      <p style="font-size:11.5px;opacity:.75;margin:0 0 var(--s-2);">입력한 값은 바로 반영되지 않고 <b>제안</b>으로 만들어져 우측 패널에서 승인해야 반영됩니다. 모르는 항목은 비워두세요 — 추측으로 채우지 않는 것이 원칙입니다.</p>
+      <div style="display:flex;flex-direction:column;gap:6px;">${fields.join("")}</div>
+      <div style="display:flex;gap:var(--s-2);justify-content:flex-end;margin-top:var(--s-3);">
+        <button onclick="this.closest('dialog').close()">취소</button>
+        <button class="primary" onclick="submitClarify()">제안 생성</button>
+      </div>
+    </div>`;
+  dlg.showModal();
+}
+
+function submitClarify() {
+  const dlg = document.getElementById("clarify-dialog");
+  const inputs = [...dlg.querySelectorAll("input[data-clarify-idx]")];
+  const ops = [];
+  for (const inp of inputs) {
+    const v = inp.value.trim();
+    if (!v) continue; // 비움 = 모름 = 추측 금지
+    const nid = inp.dataset.node, slot = inp.dataset.slot;
+    const node = nodeById(nid);
+    if (!node) continue;
+    if (slot === "priority") {
+      ops.push({ op: "update_node", id: nid, patch: { priority: v.toUpperCase() } });
+    } else if (slot === "fields") {
+      ops.push({ op: "update_node", id: nid, patch: { attrs: { ...(node.attrs || {}), fields: v.split(",").map(s => s.trim()).filter(Boolean) } } });
+    } else {
+      ops.push({ op: "update_node", id: nid, patch: { attrs: { ...(node.attrs || {}), [slot]: v } } });
+    }
+  }
+  dlg.close();
+  if (ops.length === 0) { toast("입력된 답 없음 — 제안 미생성", "info"); return; }
+  registerProposal({ intent: `clarify 응답 ${ops.length}건 (빈 슬롯 채움)`, ops, violations: [], recs: [] }, "user-clarify");
+  toast(`제안 생성됨 — 우측 패널에서 승인하세요 (${ops.length}건)`, "ok");
 }
 
 // =================== I/O ===================
@@ -7213,7 +7594,8 @@ function outlineToTreeText() {
       const indent = "  ".repeat(depth);
       const tags = [c.role, c.priority, c.status !== "confirmed" ? c.status : null].filter(Boolean).join("/");
       const miss = missingOf(c);
-      out.push(`${indent}- **[${tags}]** ${c.title}${miss.length ? ` _⚠missing: ${miss.join(", ")}_` : ""}`);
+      // <!-- @ubp: #id --> 주석 — 외부 도구에서 수정 후 재import 해도 노드 id·이력·anchor 보존 (왕복)
+      out.push(`${indent}- **[${tags}]** ${c.title}${miss.length ? ` _⚠missing: ${miss.join(", ")}_` : ""} <!-- @ubp: #${c.id} -->`);
       if (c.body) out.push(`${indent}    > ${c.body.split("\n").join(" ")}`);
       walk(c.id, depth + 1);
     }
@@ -7224,6 +7606,52 @@ function outlineToTreeText() {
 
 // 본질 정정(2026-06-09): outlineToPRD / outlineToPPT / outlineToArticle 제거.
 // 단일 export — 와이어프레임 자체의 텍스트(트리). 산출물 변환은 모델·외부 도구가 함.
+
+// ============ #8 하네스/정책 골격 export — UBP 최대 활용처(정책문서·하네스 설계) 전용 직렬화 ============
+// 산출물 자체 렌더가 아니라 "모델이 CLAUDE.md/system prompt 를 완성하기 위한 구조화 입력" — 골격+지시만 출력.
+function exportHarnessMd() {
+  const out = [];
+  out.push(`# ${BP.meta.title} — 하네스/정책 골격 (rev ${BP.meta.rev})`);
+  out.push("");
+  out.push("> 이 파일은 완성된 정책 문서가 아니라 **모델 입력용 골격**이다. 아래 조항·근거·예외를 바탕으로");
+  out.push("> CLAUDE.md / system prompt / 운영 정책 문서를 완성하라. 골격에 없는 규칙을 발명하지 말 것.");
+  out.push("");
+  const byRole = role => BP.nodes.filter(n => n.role === role);
+  const supportsOf = id => BP.edges.filter(e => e.to === id && e.type === "supports")
+    .map(e => nodeById(e.from)).filter(Boolean);
+  const claims = byRole("claim"), reqs = byRole("requirement"), notes = byRole("note"), goals = byRole("goal");
+  if (goals.length) {
+    out.push("## 목적");
+    for (const g of goals) out.push(`- ${g.title}${g.body ? ` — ${g.body.split("\n").join(" ")}` : ""} <!-- @ubp: #${g.id} -->`);
+    out.push("");
+  }
+  if (claims.length + reqs.length > 0) {
+    out.push("## 원칙·규칙 조항");
+    let no = 0;
+    for (const n of [...claims, ...reqs]) {
+      no++;
+      const sup = supportsOf(n.id);
+      out.push(`${no}. **${n.title}**${n.priority ? ` (${n.priority})` : ""} <!-- @ubp: #${n.id} -->`);
+      if (n.body) out.push(`   - ${n.body.split("\n").join(" ")}`);
+      for (const s of sup) out.push(`   - 근거: ${s.title} <!-- @ubp: #${s.id} -->`);
+      const miss = missingOf(n);
+      if (miss.length) out.push(`   - ⚠ 미정 슬롯: ${miss.join(", ")} — 추측으로 채우지 말고 질문할 것`);
+    }
+    out.push("");
+  }
+  if (notes.length) {
+    out.push("## 예외·메모");
+    for (const n of notes) out.push(`- ${n.title}${n.body ? ` — ${n.body.split("\n").join(" ")}` : ""} <!-- @ubp: #${n.id} -->`);
+    out.push("");
+  }
+  out.push("## 완성 지침");
+  out.push("- 조항은 명령형으로 다듬되 의미를 바꾸지 말 것. 모호하면 골격의 `<!-- @ubp: #id -->` 를 인용해 질문.");
+  out.push("- 수정 제안은 UBP 로 되쏘기: propose_update(ops, intent) + anchor 명시.");
+  const txt = out.join("\n");
+  const filename = `${safeName()}_harness_rev${BP.meta.rev}.md`;
+  downloadBlob(txt, filename, "text/markdown");
+  toast(`다운로드: ${filename} · 모델이 하네스/정책 문서로 완성`, "ok");
+}
 
 function exportOutlineClipboard() {
   const txt = outlineToText();
@@ -8900,6 +9328,7 @@ startRevWatch();
 
 // 설정 기반 store 자동 활성화 — Supabase(🟢) 우선, 없으면 연결된 폴더(🔵), 둘 다 없으면 이 브라우저(⚪).
 (async () => {
+  updateWsBadge(); // 워크스페이스 배지 — 어느 티어든 항상 표시
   // 🟢 CLOUD — Supabase 설정 시. activateCloudStore 내부 syncAfterConnect 가 로드·렌더까지 처리.
   if (await activateCloudStore()) return;
   // 🔵 FILE — 이전에 연결한 폴더 핸들이 IndexedDB 에 있으면 권한 확인 후 파일로 교체.

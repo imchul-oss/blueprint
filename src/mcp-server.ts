@@ -65,22 +65,110 @@ function scopeBlueprint(bp: ReturnType<typeof store.get>, nodeIds: string[]) {
   return { ...bp, nodes: bp.nodes.filter((n) => keep.has(n.id)), edges };
 }
 
+// sinceRev 이후 confirm 으로 변경된 노드 id 집합 — audit 의 confirm 엔트리 ops 에서 수집.
+function changedIdsSince(sinceRev: number): { ids: string[]; removed: string[] } {
+  const ids = new Set<string>();
+  const removed = new Set<string>();
+  for (const e of store.tailAudit(10_000)) {
+    if (e.kind !== "confirm" || typeof e.rev !== "number" || e.rev <= sinceRev) continue;
+    for (const op of e.ops ?? []) {
+      if (op.op === "add_node") ids.add(op.node.id);
+      else if (op.op === "update_node") ids.add(op.id);
+      else if (op.op === "remove_node") { ids.add(op.id); removed.add(op.id); }
+      else if (op.op === "add_edge" || op.op === "remove_edge") { ids.add(op.edge.from); ids.add(op.edge.to); }
+    }
+  }
+  return { ids: [...ids], removed: [...removed] };
+}
+
 server.tool(
   "read_blueprint",
-  "현재 블루프린트를 JSON+자연어요약+anchor 형태로 반환. 이걸로 PRD/PPT/코드 등을 렌더하라. nodeIds 지정 시 해당 노드+1-hop 이웃만 반환(반복 작업 토큰 절약).",
-  { nodeIds: z.array(z.string()).optional().describe("부분 조회할 노드 id 목록. 생략 시 전체.") },
-  async ({ nodeIds }) => {
+  "현재 블루프린트를 JSON+자연어요약+anchor 형태로 반환. 이걸로 PRD/PPT/코드 등을 렌더하라. " +
+    "nodeIds=부분 조회(해당 노드+1-hop), sinceRev=해당 rev 이후 변경 노드만(delta), target=서빙 프로파일(prd|deck|code|policy).",
+  {
+    nodeIds: z.array(z.string()).optional().describe("부분 조회할 노드 id 목록. 생략 시 전체."),
+    sinceRev: z.number().optional().describe("이 rev 이후 confirm 으로 바뀐 노드만 delta 반환. 변경 없으면 본문 없이 알림."),
+    target: z.enum(["prd", "deck", "code", "policy"]).optional().describe("서빙 프로파일 — 타깃 산출물별 주목 슬롯·렌더 지침"),
+  },
+  async ({ nodeIds, sinceRev, target }) => {
     let bp = store.get();
+    const rev = store.rev();
     let scopeNote = "";
-    if (nodeIds && nodeIds.length > 0) {
+    if (typeof sinceRev === "number") {
+      if (sinceRev >= rev) return text(`변경 없음 — 현재 rev=${rev} (sinceRev=${sinceRev}). 전체는 sinceRev 생략.`);
+      const delta = changedIdsSince(sinceRev);
+      if (delta.ids.length === 0) return text(`변경 없음 — rev ${sinceRev}→${rev} 사이 confirm 이력에 노드 변경이 없음 (감사 로테이션으로 이력이 잘렸을 수 있음 — 전체 조회 권장).`);
+      bp = scopeBlueprint(bp, delta.ids);
+      scopeNote = `\n[delta: rev ${sinceRev}→${rev}, 변경 노드 ${delta.ids.length}개${delta.removed.length ? `, 삭제됨: ${delta.removed.join(",")}` : ""}]`;
+    } else if (nodeIds && nodeIds.length > 0) {
       bp = scopeBlueprint(bp, nodeIds);
       scopeNote = `\n[scope: ${nodeIds.join(",")} +1-hop — 전체는 nodeIds 생략]`;
     }
-    const s = serializeForModel(bp);
-    const rev = store.rev();
+    const s = serializeForModel(bp, { target });
     return text(
       `${s.summary}\n\n[meta.rev=${rev}]${scopeNote}\n\n---\n[JSON]\n${JSON.stringify(s.json)}`,
     );
+  },
+);
+
+server.tool(
+  "read_attachments",
+  "노드의 레퍼런스 첨부(이미지/sketch/링크/파일)를 모델에 전달. inline dataUrl 이미지는 이미지 블록으로 반환 — 시각 레퍼런스로 활용하라.",
+  { nodeId: z.string().describe("첨부를 읽을 노드 id") },
+  async ({ nodeId }) => {
+    const bp = store.get();
+    const node = bp.nodes.find((n) => n.id === nodeId);
+    if (!node) return text(`ERROR: 노드 ${nodeId} 없음. read_blueprint 로 id 확인.`);
+    const atts = node.attachments ?? [];
+    if (atts.length === 0) return text(`#${nodeId} 첨부 없음.`);
+    const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];
+    const lines: string[] = [`#${nodeId} "${node.title}" 첨부 ${atts.length}건:`];
+    for (const a of atts) {
+      lines.push(`- [${a.kind}] ${a.title ?? a.id}${a.url ? ` — ${a.url}` : ""}${a.mime ? ` (${a.mime})` : ""}`);
+      const m = a.dataUrl?.match(/^data:(image\/[a-z+.-]+);base64,(.+)$/s);
+      if (m) content.push({ type: "image", data: m[2], mimeType: m[1] });
+      else if (a.dataUrl?.startsWith("data:image/svg")) lines.push(`  (sketch SVG — dataUrl ${a.dataUrl.length}자, 필요 시 url 변환)`);
+      else if (a.url?.startsWith("@idb:")) lines.push(`  (브라우저 IndexedDB 전용 저장 — 웹에서 inline/url 로 전환해야 MCP 로 전달 가능)`);
+      else if (a.url?.startsWith("@fs:")) lines.push(`  (로컬 폴더 저장 — .blueprint/attachments/${a.url.slice(4)} 경로 참조)`);
+    }
+    content.unshift({ type: "text", text: lines.join("\n") });
+    return { content };
+  },
+);
+
+server.tool(
+  "check_anchor_drift",
+  "코드 anchor(@ubp-anchor)와 블루프린트의 정합을 검사 — (1) 존재하지 않는 노드를 가리키는 anchor (2) anchor 가 하나도 없는 confirmed feature/component. drift 능동 감시용.",
+  { dir: z.string().describe("스캔할 코드 디렉토리 (절대/상대 경로)") },
+  async ({ dir }) => {
+    const bp = store.get();
+    let hits;
+    try {
+      hits = scanCodeAnchors(dir);
+    } catch (e) {
+      return text(`ERROR: 스캔 실패 — ${(e as Error).message}`);
+    }
+    const nodeIds = new Set(bp.nodes.map((n) => n.id));
+    const orphanAnchors = hits.filter((h) => !nodeIds.has(h.nodeId));
+    const anchoredIds = new Set(hits.map((h) => h.nodeId));
+    const uncovered = bp.nodes.filter(
+      (n) => (n.role === "feature" || n.role === "component") && n.status === "confirmed" && !anchoredIds.has(n.id),
+    );
+    const lines = [`# Anchor Drift 리포트 (${dir}, anchor ${hits.length}건 스캔)`];
+    if (orphanAnchors.length === 0 && uncovered.length === 0) {
+      lines.push("drift 없음 — 모든 anchor 가 유효하고, confirmed feature/component 가 전부 anchor 로 추적됨.");
+    } else {
+      if (orphanAnchors.length > 0) {
+        lines.push(`\n## 끊어진 anchor ${orphanAnchors.length}건 (코드가 가리키는 노드가 BP 에 없음 — 노드 삭제/개명 후 코드 미반영)`);
+        for (const h of orphanAnchors) lines.push(`- ${h.file}:${h.line} → #${h.nodeId}${h.path ? `.${h.path}` : ""}`);
+      }
+      if (uncovered.length > 0) {
+        lines.push(`\n## anchor 미커버 노드 ${uncovered.length}건 (confirmed 인데 코드 추적 없음)`);
+        for (const n of uncovered) lines.push(`- #${n.id} [${n.role}] ${n.title}`);
+        lines.push(`\n-> anchor_to_propose 로 traces-to 연결을 제안하거나, 코드에 @ubp-anchor: #id 주석 추가.`);
+      }
+    }
+    return text(lines.join("\n"));
   },
 );
 
@@ -132,9 +220,20 @@ server.tool(
 
 server.tool(
   "confirm_update",
-  "제안된 변경을 실제로 반영한다(사람 승인 후). proposalId 필요, actor 권장.",
+  "제안된 변경을 실제로 반영한다(사람 승인 후). proposalId 필요, actor 권장. " +
+    "UBP_FORBID_SELF_CONFIRM=1 이면 propose 한 actor 의 자가승인을 거부.",
   { proposalId: z.string(), actor: z.string().default("user") },
   async ({ proposalId, actor }) => {
+    // 에이전트 자가승인 차단 (NFR) — env 로 opt-in, 모든 백엔드 공통.
+    if (process.env.UBP_FORBID_SELF_CONFIRM === "1") {
+      const pending = store.listPending().find((p) => p.id === proposalId);
+      if (pending && pending.actor === actor) {
+        return text(
+          `ERROR: 자가승인 거부 — 제안 ${proposalId} 는 actor "${actor}" 가 직접 올린 것. ` +
+            `사람(또는 다른 actor)이 confirm_update(actor=<사람>) 로 승인해야 함 (UBP_FORBID_SELF_CONFIRM=1).`,
+        );
+      }
+    }
     const r = store.confirm(proposalId, { actor });
     if (!r)
       return text(

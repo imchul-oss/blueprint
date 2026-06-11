@@ -208,6 +208,7 @@ smoke.mjs                # 환경 자가검증
 | `UBP_WORKSPACE_ID` | `default` | 옵션3 워크스페이스 격리 키 — **웹 워크스페이스 ID 와 동일해야 공유됨** |
 | `SUPABASE_URL` | — | `UBP_BACKEND=supabase` 시 필수 |
 | `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | — | Supabase 인증 키 (RLS 적용 시 anon, 서버 신뢰 시 service) |
+| `UBP_FORBID_SELF_CONFIRM` | — | `1` 이면 propose 한 actor 의 자가 confirm 거부 (NFR: 에이전트 자가승인 금지 강제) |
 
 `UBP_BACKEND` 미설정 시 filesystem 으로 동작하므로 기존 옵션2/단일 사용자 셋업은 무회귀.
 
