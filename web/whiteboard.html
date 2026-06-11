@@ -291,6 +291,9 @@
   button.ghost { background: transparent; border-color: transparent; }
   button.ghost:hover { background: var(--line); border-color: transparent; }
   button.icon { width: 32px; height: 32px; padding: 0; justify-content: center; }
+  /* 토글형 아이콘 버튼 활성 상태 (아웃라인 전환 등) — accent 로 명확히 강조 */
+  button.icon.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.icon.active:hover { background: var(--accent); filter: brightness(1.08); }
   .kbd {
     font-family: var(--font-mono); font-size: 10.5px;
     padding: 1px 5px; border-radius: 4px;
@@ -4549,9 +4552,16 @@ function centerOf(id) {
   const p = pos[id] || { x: 0, y: 0 };
   let s = _sizeCache.get(id);
   if (!s) {
-    const el = document.querySelector(`[data-id="${id}"]`);
-    s = { w: el ? el.offsetWidth : 224, h: el ? el.offsetHeight : 88 };
-    if (el) _sizeCache.set(id, s);
+    const n = nodeById(id);
+    if (n && n.role === "section") {
+      // frame 은 data-id 가 아닌 data-frame-id — DOM 조회 대신 attrs 치수 사용 (유령 224x88 방지)
+      s = { w: n.attrs?.frame?.width || 520, h: n.attrs?.frame?.height || 360 };
+      _sizeCache.set(id, s);
+    } else {
+      const el = document.querySelector(`[data-id="${id}"]`);
+      s = { w: el ? el.offsetWidth : 224, h: el ? el.offsetHeight : 88 };
+      if (el) _sizeCache.set(id, s);
+    }
   }
   return { x: p.x + s.w / 2, y: p.y + s.h / 2 };
 }
@@ -4978,6 +4988,16 @@ function drawEdges() {
   svg.innerHTML = BP.edges.map((e, ei) => {
     const ca = centers[e.from], cb = centers[e.to];
     if (!ca || !cb) return "";
+    // frame 중첩은 시각적 포함으로 이미 표현 — 자식 중심이 frame 안에 있으면 parent 엣지 렌더 생략
+    // (베지어 전환으로 frame 밖으로 부풀어 보이던 회귀 수정. 카드가 밖으로 나가면 다시 그려짐)
+    if (e.type === "parent") {
+      const toN = nodeById(e.to);
+      if (toN && toN.role === "section") {
+        const fp = pos[e.to];
+        const fw = toN.attrs?.frame?.width || 520, fh = toN.attrs?.frame?.height || 360;
+        if (fp && ca.x >= fp.x && ca.x <= fp.x + fw && ca.y >= fp.y && ca.y <= fp.y + fh) return "";
+      }
+    }
     const a = anchorOf(e.from, cb);
     const b = anchorOf(e.to, ca);
     const { d, c1, c2 } = edgePathD(a, b);
