@@ -310,7 +310,7 @@
 
   /* Canvas */
   #canvas-container {
-    flex: 1; height: 100%; position: relative; overflow: hidden;
+    flex: 1; min-width: 0; height: 100%; position: relative; overflow: hidden;
     background-color: var(--bg);
     background-image: radial-gradient(var(--bg-grid) 1px, transparent 1px);
     background-size: var(--grid-bg) var(--grid-bg);
@@ -323,7 +323,9 @@
   #canvas-container:active { cursor: grabbing; }
   #canvas { position: absolute; width: 4000px; height: 3000px; transform-origin: 0 0; }
   svg#edges {
-    position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1;
+    /* z-index 6: frame(5) 위 · node(10) 아래. frame 안쪽을 지나는 엣지도 선택 가능 (bug 7).
+       svg 자체는 pointer-events:none 이라 빈 영역은 frame/캔버스로 통과하고, 선(stroke)만 클릭을 받는다. */
+    position: absolute; inset: 0; width: 100%; height: 100%; z-index: 6;
     pointer-events: none; /* 컨테이너는 패스 통과 */
   }
   svg#edges line, svg#edges path { pointer-events: stroke; cursor: pointer; }
@@ -433,6 +435,7 @@
     background: transparent; border: none; cursor: pointer; color: var(--muted);
   }
   .ctrl-btn:hover { color: var(--ink); background: var(--line); }
+  .ctrl-btn.active { color: var(--accent-fg); background: var(--accent); }
   #zoom-level {
     display: inline-flex; align-items: center; padding: 0 var(--s-2);
     font-size: 11px; color: var(--muted); font-weight: 600; min-width: 44px; justify-content: center;
@@ -440,7 +443,8 @@
 
   /* Mini-map */
   #minimap {
-    position: absolute; bottom: var(--s-6); right: 340px;
+    /* canvas-container 안에 위치 — 우하단 기본. 패널/창 크기와 무관 (bug 16/17) */
+    position: absolute; bottom: var(--s-6); right: var(--s-6);
     width: 180px; height: 120px;
     background: var(--panel-bg);
     border: 1px solid var(--panel-border);
@@ -501,7 +505,7 @@
     transform: translateY(-50%);
     width: 14px; height: 32px;
     background: var(--bg-elev); border: 1px solid var(--panel-border);
-    cursor: pointer;
+    cursor: pointer; z-index: 75; /* 다른 요소 위로 (bug 24) — 위치는 reopen 핸들과 동일하게 가운데 유지 */
     color: var(--muted); font-size: 9px; line-height: 1;
     display: flex; align-items: center; justify-content: center;
     opacity: 0; transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
@@ -763,8 +767,11 @@
     transition-delay: 400ms;
   }
   /* 헤더 버튼은 우측에 몰려 있어 중앙 정렬 시 화면 밖으로 잘림 → 버튼 오른쪽 모서리 기준으로 왼쪽으로 펼침 */
+  /* 헤더 버튼이 2열로 줄바꿈돼도 툴팁이 아래쪽 버튼을 덮지 않도록 버튼 '위'로 띄운다 (bug 19) */
   .actions-row [data-tooltip]::before {
-    left: auto; right: 0; transform: translateY(-2px);
+    left: auto; right: 0;
+    top: auto; bottom: calc(100% + 6px);
+    transform: translateY(2px);
   }
   .actions-row [data-tooltip]:hover::before {
     transform: translateY(0);
@@ -779,6 +786,7 @@
     box-shadow: var(--shadow-3);
     padding: var(--s-1); min-width: 200px;
     font-size: 13px;
+    max-height: 90vh; overflow-y: auto;
   }
   .ctx-menu button {
     width: 100%; text-align: left; padding: 7px 12px;
@@ -853,23 +861,28 @@
   /* Templates */
   #empty-canvas {
     position: absolute; inset: 0;
-    display: none; flex-direction: column; align-items: center; justify-content: center;
+    display: none; flex-direction: column; align-items: center;
+    /* safe center: 내용이 컨테이너보다 길면 위로 잘리지 않고 스크롤되도록 (bug 3) */
+    justify-content: safe center;
+    overflow-y: auto; padding: var(--s-8) var(--s-4);
     z-index: 5; pointer-events: none;
   }
   #empty-canvas.show { display: flex; }
   #empty-canvas .templates {
-    display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--s-3);
-    max-width: 540px; pointer-events: auto;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--s-3); width: 100%; max-width: 560px; pointer-events: auto;
   }
   .template-card {
     background: var(--bg-elev); border: 1px solid var(--panel-border);
-    border-radius: var(--r-md); padding: var(--s-4);
-    cursor: pointer; text-align: left; min-height: 120px;
+    border-radius: var(--r-md); padding: var(--s-3) var(--s-4);
+    cursor: pointer; text-align: left; min-height: 84px;
+    display: flex; flex-direction: column; gap: 4px;
     transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
   }
   .template-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-2); }
-  .template-card h4 { margin: 0 0 var(--s-1); font-size: 14px; }
-  .template-card p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .template-card h4 { margin: 0; font-size: 14px; }
+  /* 한국어 단락: 단어 중간에서 잘리지 않게 keep-all + 긴 토큰만 줄바꿈 (bug 4) */
+  .template-card p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; word-break: keep-all; overflow-wrap: anywhere; }
 
   /* Onboarding */
   #onboarding {
@@ -1216,7 +1229,7 @@
   #outline-view {
     position: absolute;
     top: 0; bottom: 0;
-    left: var(--panel-width); right: var(--panel-width);  /* 좌·우 패널 가림 X */
+    left: 0; right: 0;  /* 전체화면 — 좌·우 패널까지 덮음. 종료는 헤더의 아웃라인 토글(⌘O) (bug 20) */
     background: var(--panel-bg);
     backdrop-filter: blur(20px) saturate(180%);
     -webkit-backdrop-filter: blur(20px) saturate(180%);
@@ -1347,6 +1360,7 @@
     <symbol id="i-plus-square" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></symbol>
     <symbol id="i-frame" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></symbol>
     <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><line x1="4" y1="12" x2="17" y2="12"/><polyline points="12 7 17 12 12 17"/></symbol>
   </defs>
 </svg>
 
@@ -1546,6 +1560,26 @@
         </button>
       </div>
     </div>
+    <!-- Floating controls — canvas-container 안에 두어 좌우 패널/창 크기와 무관하게 캔버스 영역 기준으로 배치 (bug 16/17) -->
+    <div id="canvas-controls">
+      <button class="ctrl-btn" onclick="zoomIn()" aria-label="확대" title="확대 (⌘+)">
+        <svg class="ic"><use href="#i-zoom-in"/></svg>
+      </button>
+      <span id="zoom-level">100%</span>
+      <button class="ctrl-btn" onclick="zoomOut()" aria-label="축소" title="축소 (⌘-)">
+        <svg class="ic"><use href="#i-zoom-out"/></svg>
+      </button>
+      <button class="ctrl-btn" onclick="resetView()" aria-label="원위치" title="원위치 (⌘0)">
+        <svg class="ic"><use href="#i-fit"/></svg>
+      </button>
+      <button class="ctrl-btn" id="arrow-toggle" onclick="toggleArrows()" aria-label="방향 화살표" title="엣지 방향 화살표 표시/숨김">
+        <svg class="ic"><use href="#i-arrow"/></svg>
+      </button>
+    </div>
+    <div id="minimap" aria-hidden="true" onclick="onMinimapClick(event)" style="cursor:crosshair">
+      <svg id="mini-svg"></svg>
+      <div id="minimap-viewport"></div>
+    </div>
   </div>
 
   <!-- ============ RIGHT PANEL ============ -->
@@ -1621,8 +1655,8 @@
             <textarea id="f_ac" rows="3" oninput="patchAttr('acceptance_criteria', this.value)"></textarea>
           </div>
           <div class="field-group" id="f_fields_group" style="display:none">
-            <label class="field-label" for="f_fields">필드 (data-entity, 콤마 구분)</label>
-            <input id="f_fields" oninput="patchFields(this.value)">
+            <label class="field-label" for="f_fields">필드 — 쉼표(,)로 구분 · 예: id, name, email</label>
+            <input id="f_fields" placeholder="id, name, email" onchange="patchFields(this.value)">
           </div>
           <div id="f_missing_container" style="display:none">
             <div class="missing-banner">
@@ -1710,26 +1744,6 @@
       </div>
     </div>
   </aside>
-
-  <!-- ============ Floating controls ============ -->
-  <div id="canvas-controls">
-    <button class="ctrl-btn" onclick="zoomIn()" aria-label="확대" title="확대 (⌘+)">
-      <svg class="ic"><use href="#i-zoom-in"/></svg>
-    </button>
-    <span id="zoom-level">100%</span>
-    <button class="ctrl-btn" onclick="zoomOut()" aria-label="축소" title="축소 (⌘-)">
-      <svg class="ic"><use href="#i-zoom-out"/></svg>
-    </button>
-    <button class="ctrl-btn" onclick="resetView()" aria-label="원위치" title="원위치 (⌘0)">
-      <svg class="ic"><use href="#i-fit"/></svg>
-    </button>
-  </div>
-
-  <!-- Mini-map -->
-  <div id="minimap" aria-hidden="true" onclick="onMinimapClick(event)" style="cursor:crosshair">
-    <svg id="mini-svg"></svg>
-    <div id="minimap-viewport"></div>
-  </div>
 
   <!-- Outline view (그래프↔산출물 미리보기 토글) -->
   <div id="outline-view" aria-label="Outline 미리보기">
@@ -4116,7 +4130,7 @@ function startCanvasPan(e) {
   // (4) 우클릭 드래그 (button=2)
   // 2026-06-09 fix: e.target 이 #canvas (자식) 일 때도 빈 곳으로 인정. 노드/포트/프레임 위가
   // 아닌 모든 클릭을 pan 으로 처리.
-  const onInteractive = !!(e.target.closest && e.target.closest(".node, .port, .frame, .frame-title, .frame-resize, .ghost-arrow, .stencil-card, .conflict-badge, button, input, textarea, select, [contenteditable='true']"));
+  const onInteractive = !!(e.target.closest && e.target.closest(".node, .port, .frame, .frame-title, .frame-resize, .ghost-arrow, .stencil-card, .conflict-badge, button, input, textarea, select, [contenteditable='true'], #minimap, #canvas-controls"));
   const onBlank = !onInteractive;
   const isMiddleClick = e.button === 1;
   const isRightClick = e.button === 2;
@@ -4505,14 +4519,28 @@ function edgeSwatch(t) {
   return `<svg width="34" height="8" style="flex:none;display:block;"><line x1="1" y1="4" x2="33" y2="4" stroke="${s.color}" stroke-width="${s.w}" ${s.dash} stroke-linecap="${s.cap}"/></svg>`;
 }
 
+// 떠있는 메뉴/팝업을 실제 크기를 측정해 뷰포트 안으로 클램프. 상·하단 모두 보정하므로
+// 화면 하단에서 띄워도 잘리지 않고, 위로 밀려 버튼이 화면 밖으로 사라지지도 않는다. (bug 5)
+function clampFloating(el, x, y, pad = 8) {
+  el.style.left = x + "px";
+  el.style.top = y + "px";
+  requestAnimationFrame(() => {
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let nx = x, ny = y;
+    if (x + r.width  > vw - pad) nx = Math.max(pad, vw - r.width  - pad);
+    if (y + r.height > vh - pad) ny = Math.max(pad, vh - r.height - pad);
+    el.style.left = nx + "px";
+    el.style.top = ny + "px";
+  });
+}
+
 function showEdgeTypePopup(fromId, toId, clientX, clientY) {
   // 기존 popup 제거
   document.querySelectorAll(".edge-type-popup").forEach(el => el.remove());
   const pop = document.createElement("div");
   pop.className = "edge-type-popup";
-  pop.style.cssText = `position:fixed;z-index:1000;background:var(--bg-elev);border:1px solid var(--panel-border);border-radius:var(--r-md);box-shadow:var(--shadow-3);padding:var(--s-3);font-family:var(--font-sans);font-size:13px;min-width:268px;`;
-  pop.style.left = `${Math.min(clientX, window.innerWidth - 290)}px`;
-  pop.style.top = `${Math.min(clientY, window.innerHeight - 340)}px`;
+  pop.style.cssText = `position:fixed;z-index:1000;background:var(--bg-elev);border:1px solid var(--panel-border);border-radius:var(--r-md);box-shadow:var(--shadow-3);padding:var(--s-3);font-family:var(--font-sans);font-size:13px;min-width:268px;max-height:90vh;overflow:auto;`;
   pop.innerHTML = `
     <div style="font-weight:600;margin-bottom:8px;font-size:12px;">엣지 type 선택 (Shift+drop = depends-on 즉시)</div>
     ${EDGE_TYPES.map(({ t, ko }) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='var(--line)'" onmouseout="this.style.background=''">
@@ -4527,6 +4555,7 @@ function showEdgeTypePopup(fromId, toId, clientX, clientY) {
     </div>
   `;
   document.body.appendChild(pop);
+  clampFloating(pop, clientX, clientY);
   // 5초 후 자동 닫힘
   setTimeout(() => { if (document.body.contains(pop)) pop.remove(); }, 30000);
 }
@@ -4959,6 +4988,9 @@ function render() {
   drawEdges();
   updateMissingBadge();
   updateMinimap();
+  // 엣지 추가/삭제·컨테이너(프레임) 변환 후에도 관계창이 즉시 반영되도록 동기화 (bug 8).
+  // selId 없으면 renderRelations 내부에서 즉시 반환하므로 안전.
+  if (selId) renderRelations();
 }
 
 function ensureCanvasFits() {
@@ -4979,14 +5011,30 @@ function ensureCanvasFits() {
   }
 }
 
+let showArrows = false;
+try { showArrows = localStorage.getItem("ubp-arrows") === "1"; } catch {}
+function toggleArrows() {
+  showArrows = !showArrows;
+  try { localStorage.setItem("ubp-arrows", showArrows ? "1" : "0"); } catch {}
+  syncArrowToggleBtn();
+  drawEdges();
+  toast(showArrows ? "엣지 방향 화살표 표시" : "엣지 방향 화살표 숨김", "ok");
+}
+function syncArrowToggleBtn() {
+  const b = document.getElementById("arrow-toggle");
+  if (b) b.classList.toggle("active", showArrows);
+}
+
 function drawEdges() {
   const svg = document.getElementById("edges");
   const centers = {};
   for (const n of BP.nodes) {
     centers[n.id] = centerOf(n.id);
   }
+  // 방향 화살표 마커 (bug 1) — context-stroke 로 엣지 색과 자동 일치. showArrows 켰을 때만 marker-end 부착.
+  const defs = `<defs><marker id="edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke" stroke="none"/></marker></defs>`;
   // 스타일은 EDGE_STYLE 단일 원천 (팝업 스와치와 동일). 끝점은 중앙이 아닌 변 중앙 앵커 + 베지어.
-  svg.innerHTML = BP.edges.map((e, ei) => {
+  svg.innerHTML = defs + BP.edges.map((e, ei) => {
     const ca = centers[e.from], cb = centers[e.to];
     if (!ca || !cb) return "";
     // frame 중첩은 시각적 포함으로 이미 표현 — 자식 중심이 frame 안에 있으면 parent 엣지 렌더 생략
@@ -5013,7 +5061,8 @@ function drawEdges() {
     // Wide invisible hit-area first, then visible stroke. 14px hit zone makes edges clickable.
     const hit = `<path d="${d}" fill="none" stroke="transparent" stroke-width="14" class="hit" data-edge-key="${edgeKey}" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
     const selClass = isSel ? ' class="edge-selected"' : '';
-    const line = hit + `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${sw}" stroke-linecap="${s.cap || "butt"}" ${s.dash} data-edge-idx="${ei}" data-edge-key="${edgeKey}"${selClass} style="pointer-events:stroke;cursor:pointer;" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
+    const arrow = showArrows ? ` marker-end="url(#edge-arrow)"` : "";
+    const line = hit + `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${sw}" stroke-linecap="${s.cap || "butt"}" ${s.dash} data-edge-idx="${ei}" data-edge-key="${edgeKey}"${selClass}${arrow} style="pointer-events:stroke;cursor:pointer;" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
     // edge label (정책 그래프 등) — 베지어 중점 위
     if (e.label) {
       const m = bezierMid(a, c1, c2, b);
@@ -5102,7 +5151,12 @@ function selectNode(id) {
 
   document.getElementById("f_id").value = node.id;
   document.getElementById("f_title").value = node.title || "";
-  document.getElementById("f_role").value = node.role;
+  // bug 12: 스텐실 커스텀 역할이나 임포트된 역할이 ROLES 밖이어도 드롭다운에 보이도록 옵션 보강
+  const roleSel = document.getElementById("f_role");
+  if (node.role && !Array.from(roleSel.options).some(o => o.value === node.role)) {
+    const o = document.createElement("option"); o.value = o.textContent = node.role; roleSel.appendChild(o);
+  }
+  roleSel.value = node.role;
   document.getElementById("f_status").value = node.status || "draft";
   document.getElementById("f_priority").value = node.priority || "";
   document.getElementById("f_body").value = node.body || "";
@@ -5121,7 +5175,12 @@ function selectNode(id) {
   const mc = document.getElementById("f_missing_container");
   if (missing.length) {
     mc.style.display = "block";
-    document.getElementById("f_missing").innerHTML = missing.map(m => `• ${esc(m)}`).join("<br>");
+    // bug 13: 어떤 조건에서 경고가 뜨는지 명시 — 역할(role)별 필수 슬롯이 비어 있을 때만.
+    const SLOT_KO = { acceptance_criteria:"수용조건", priority:"우선순위", fields:"필드 목록", "supports-edge":"supports 엣지 1개 이상", definition:"제목 또는 설명" };
+    const req = (REQUIRED[node.role] || []).map(s => SLOT_KO[s] || s).join(", ");
+    document.getElementById("f_missing").innerHTML =
+      missing.map(m => `• ${esc(SLOT_KO[m] || m)}`).join("<br>")
+      + `<div style="color:var(--muted);font-size:11px;margin-top:6px;line-height:1.4">역할 <b>${esc(node.role)}</b>의 필수 슬롯(${esc(req)})이 비어 있어 경고가 표시됩니다. 다른 역할은 필수 슬롯이 없습니다.</div>`;
   } else { mc.style.display = "none"; }
 
   renderRelations();
@@ -5167,9 +5226,7 @@ function onEdgeClick(edgeIdx, ev) {
   document.querySelectorAll(".edge-type-popup").forEach(el => el.remove());
   const pop = document.createElement("div");
   pop.className = "edge-type-popup";
-  pop.style.cssText = `position:fixed;z-index:1000;background:var(--bg-elev);border:1px solid var(--panel-border);border-radius:var(--r-md);box-shadow:var(--shadow-3);padding:var(--s-3);font-family:var(--font-sans);font-size:13px;min-width:260px;color:var(--ink);`;
-  pop.style.left = `${Math.min(ev.clientX, window.innerWidth - 280)}px`;
-  pop.style.top = `${Math.min(ev.clientY, window.innerHeight - 220)}px`;
+  pop.style.cssText = `position:fixed;z-index:1000;background:var(--bg-elev);border:1px solid var(--panel-border);border-radius:var(--r-md);box-shadow:var(--shadow-3);padding:var(--s-3);font-family:var(--font-sans);font-size:13px;min-width:260px;max-height:90vh;overflow:auto;color:var(--ink);`;
   pop.innerHTML = `
     <div style="font-weight:600;margin-bottom:8px;font-size:12px;">
       엣지 편집 — <code>${esc(e.from)}</code> → <code>${esc(e.to)}</code>
@@ -5187,6 +5244,7 @@ function onEdgeClick(edgeIdx, ev) {
     </div>
   `;
   document.body.appendChild(pop);
+  clampFloating(pop, ev.clientX, ev.clientY);
   setTimeout(() => { if (document.body.contains(pop)) pop.remove(); }, 20000);
 }
 
@@ -5206,34 +5264,37 @@ function deleteEdgeByIndex(edgeIdx) {
 
 function renderRelations() {
   if (!selId) return;
-  const parents = BP.edges.filter(e => e.from === selId).map(e => ({ to: e.to, type: e.type }));
-  const children = BP.edges.filter(e => e.to === selId && e.type === "parent").map(e => e.from);
-  const deps = BP.edges.filter(e => (e.from === selId || e.to === selId) && e.type !== "parent");
-  // edge 별 인덱스 (label 편집·삭제 시 사용)
-  const edgeIndex = new Map();
-  BP.edges.forEach((e, i) => edgeIndex.set(`${e.from}|${e.to}|${e.type}`, i));
   const titleOf = id => BP.nodes.find(n=>n.id===id)?.title || id;
-  const linkOf = id => `<a href="#" onclick="event.preventDefault();selectNode('${id}')">${esc(titleOf(id))}</a> <span style="color:var(--muted)">#${id}</span>`;
-  document.getElementById("rel-parents").innerHTML = parents.length ? parents.map(p => `<div>${esc(p.type)} → ${linkOf(p.to)}</div>`).join("") : `<span style="color:var(--muted)">없음</span>`;
+  const linkOf = id => `<a href="#" onclick="event.preventDefault();selectNode('${jsStr(id)}')">${esc(titleOf(id))}</a> <span style="color:var(--muted);font-size:10px">#${esc(id)}</span>`;
+  // 실제 BP.edges 인덱스를 함께 보존한다. 이전엔 `from|to|type` 맵으로 인덱스를 역산해
+  // 중복 엣지가 충돌(같은 키 → 마지막 인덱스만 남음)하여 엉뚱한 엣지가 삭제되거나 삭제가 안 됐다. (bug 2)
+  const indexed = BP.edges.map((e, i) => ({ e, i }));
+  const parents = indexed.filter(({ e }) => e.from === selId);
+  const children = indexed.filter(({ e }) => e.to === selId && e.type === "parent").map(({ e }) => e.from);
+  const deps = indexed.filter(({ e }) => (e.from === selId || e.to === selId) && e.type !== "parent");
+  document.getElementById("rel-parents").innerHTML = parents.length ? parents.map(({ e }) => `<div>${esc(e.type)} → ${linkOf(e.to)}</div>`).join("") : `<span style="color:var(--muted)">없음</span>`;
   document.getElementById("rel-children").innerHTML = children.length ? children.map(linkOf).join("<br>") : `<span style="color:var(--muted)">없음</span>`;
-  document.getElementById("rel-deps").innerHTML = deps.length ? deps.map(d => {
-    const idx = edgeIndex.get(`${d.from}|${d.to}|${d.type}`);
-    const typeSel = `<select onchange="setEdgeType(${idx}, this.value)" style="font-size:11px;padding:1px 4px;width:auto;">
-      ${["depends-on","supports","realizes","flows-to","renders-on","traces-to","parent"].map(t => `<option value="${t}" ${t===d.type?"selected":""}>${t}</option>`).join("")}
+  document.getElementById("rel-deps").innerHTML = deps.length ? deps.map(({ e, i }) => {
+    const typeSel = `<select onchange="setEdgeType(${i}, this.value)" style="font-size:11px;padding:1px 4px;width:auto;">
+      ${["depends-on","supports","realizes","flows-to","renders-on","traces-to","parent"].map(t => `<option value="${t}" ${t===e.type?"selected":""}>${t}</option>`).join("")}
     </select>`;
-    const labelInput = `<input value="${esc(d.label || "")}" placeholder="label" style="font-size:11px;padding:2px 6px;width:90px;" onchange="setEdgeLabel(${idx}, this.value)">`;
-    const delBtn = `<button onclick="deleteEdgeByIndex(${idx})" class="danger" style="font-size:10px;padding:2px 6px;" title="이 엣지 삭제">✕</button>`;
+    const labelInput = `<input value="${esc(e.label || "")}" placeholder="label" style="font-size:11px;padding:2px 6px;width:90px;" onchange="setEdgeLabel(${i}, this.value)">`;
+    const delBtn = `<button onclick="deleteEdgeByIndex(${i})" class="danger" style="font-size:10px;padding:2px 6px;" title="이 엣지 삭제">✕</button>`;
+    // 고유 ID 대신 카드명 병기 (bug 6) — 제목 변경도 그때그때 반영됨
     return `<div style="margin:4px 0;padding:4px;border:1px solid var(--panel-border);border-radius:4px;display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:12px;">
-      <code style="font-size:10.5px">${esc(d.from)}</code> →
+      <span style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${linkOf(e.from)}</span> →
       ${typeSel}
-      → <code style="font-size:10.5px">${esc(d.to)}</code>
+      → <span style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${linkOf(e.to)}</span>
       ${labelInput}
       ${delBtn}
     </div>`;
   }).join("") : `<span style="color:var(--muted)">없음 — 엣지 만들기: 노드 가장자리 점을 다른 노드로 드래그</span>`;
   const affected = getBlastRadius(selId);
   const level = affected.length === 0 ? "국소" : affected.length <= 3 ? "중간" : "광범위";
-  document.getElementById("rel-impact").innerHTML = `<b>${level}</b> · 파급 ${affected.length}개${affected.length ? "<br>" + affected.map(linkOf).join("<br>") : ""}`;
+  // bug 9: '임의로 뜨는' 게 아니라 의미 방향을 따라 3홉 이내로 연결된 카드라는 규칙을 명시.
+  const impactRule = `<div style="color:var(--muted);font-size:11px;margin-top:4px;line-height:1.4">
+    파급 = 의미 방향(parent↕ · depends-on/realizes/renders-on은 의존하는 쪽 · supports/flows-to는 가리키는 쪽)을 따라 <b>3홉 이내</b>로 연결된 카드입니다.</div>`;
+  document.getElementById("rel-impact").innerHTML = `<b>${level}</b> · 파급 ${affected.length}개${affected.length ? "<br>" + affected.map(linkOf).join("<br>") : ""}${impactRule}`;
 
   // History
   const hist = auditHistory.filter(h => !h.proposalId || (h.intent && h.intent.includes(selId)) || (h.affected && h.affected.includes(selId)));
@@ -5293,7 +5354,8 @@ function patchFields(raw) {
   const n = BP.nodes.find(x => x.id === selId);
   if (!n) return;
   n.attrs = n.attrs || {};
-  n.attrs.fields = raw.split(",").map(s => s.trim()).filter(Boolean);
+  // 반각/전각 쉼표 모두 허용 (한글 IME 에서 ， 가 입력돼도 동작) — onchange 라 타이핑 중에는 끊지 않음 (bug 14)
+  n.attrs.fields = raw.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
   bumpRev();
   render();
   selectNode(selId);
@@ -5383,16 +5445,8 @@ function openNodeContextMenu(x, y, nodeId) {
     `;
   }
   document.body.appendChild(m);
-  // 화면 경계 보정
-  requestAnimationFrame(() => {
-    const r = m.getBoundingClientRect();
-    const vw = window.innerWidth, vh = window.innerHeight;
-    let mx = x, my = y;
-    if (x + r.width > vw - 8) mx = vw - r.width - 8;
-    if (y + r.height > vh - 8) my = vh - r.height - 8;
-    m.style.left = mx + "px";
-    m.style.top = my + "px";
-  });
+  // 화면 경계 보정 — 상·하단 모두 클램프 (긴 메뉴가 위로 밀려 잘리지 않게). (bug 5)
+  clampFloating(m, x, y);
   setTimeout(() => document.addEventListener("pointerdown", closeContextMenuOnce, { once: true }), 0);
 }
 function closeContextMenu() {
@@ -5407,7 +5461,14 @@ function duplicateMultiSelected() {
   if (_multiSel.size < 1) return;
   saveState("multi-duplicate");
   const idMap = new Map(); // oldId → newId
-  const sources = [..._multiSel];
+  // 그룹(섹션 프레임) 복제 시 그 안의 자식들도 함께 복제 — 빈 프레임만 복사되던 문제 해결 (bug 11).
+  // 프레임 크기(attrs.frame)는 deep-copy 로 보존되어 "동일 크기" 사본이 만들어진다.
+  const srcSet = new Set(_multiSel);
+  for (const id of [..._multiSel]) {
+    const n = BP.nodes.find(x => x.id === id);
+    if (n && n.role === "section") for (const d of nodesInsideFrame(id)) srcSet.add(d);
+  }
+  const sources = [...srcSet];
   for (const oldId of sources) {
     const src = BP.nodes.find(n => n.id === oldId);
     if (!src) continue;
@@ -5614,7 +5675,10 @@ function submitClarify() {
 const ioDialog = () => document.getElementById("io");
 function exportBP() {
   document.getElementById("ioTitle").textContent = "블루프린트 JSON 내보내기";
-  document.getElementById("ioText").value = JSON.stringify(BP, null, 2);
+  // 위치(pos)는 BP 와 별개의 전역이라 그대로 stringify 하면 빠진다 → 함께 내보내 왕복 시 정렬·그룹 보존 (bug 25)
+  const out = JSON.parse(JSON.stringify(BP));
+  out.pos = pos;
+  document.getElementById("ioText").value = JSON.stringify(out, null, 2);
   document.getElementById("ioText").readOnly = true;
   document.getElementById("ioApply").style.display = "none";
   ioDialog().showModal();
@@ -5759,10 +5823,15 @@ function applyImport() {
     const parsed = JSON.parse(raw);
     const isJsonCanvas = Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)
       && parsed.nodes.some(n => "fromNode" in (parsed.edges[0] || {}) || ("x" in n && "y" in n));
+    let importedPos = null;
     if (isJsonCanvas && !parsed.meta) {
-      BP = jsonCanvasToBP(parsed);
+      Object.keys(pos).forEach(k => delete pos[k]); // 이전 BP 좌표 비우고
+      BP = jsonCanvasToBP(parsed);                  // x/y → 전역 pos 채움
+      importedPos = pos;                            // 이미 적용된 상태
       toast("JSON Canvas 가져오기", "ok");
     } else {
+      // UBP JSON: 함께 내보낸 pos 가 있으면 그것으로 복원
+      if (parsed.pos && typeof parsed.pos === "object") { importedPos = parsed.pos; delete parsed.pos; }
       BP = parsed;
       toast("UBP 블루프린트 가져오기", "ok");
     }
@@ -5770,7 +5839,22 @@ function applyImport() {
     if (!BP.meta.rev) BP.meta.rev = 1;
     ioDialog().close();
     bumpRev();
-    autoLayout(); render();
+    // 좌표·그룹 복원 (bug 25): 가져온 JSON 에 위치가 있으면 그대로 써서 정렬/그룹 배치를 보존.
+    // 위치가 전혀 없을 때만 autoLayout. (예전엔 무조건 autoLayout 으로 덮어써 정렬·그룹이 깨졌음)
+    if (importedPos && importedPos !== pos) {
+      Object.keys(pos).forEach(k => delete pos[k]);
+      Object.assign(pos, importedPos);
+    }
+    const validIds = new Set(BP.nodes.map(n => n.id));
+    Object.keys(pos).forEach(k => { if (!validIds.has(k)) delete pos[k]; });
+    if (BP.nodes.every(n => !pos[n.id])) {
+      autoLayout(); // 위치 정보 전무 → 자동 배치
+    } else {
+      // 일부 노드만 좌표 결손 시 전체를 덮지 않고 결손분만 격자 임시 배치
+      BP.nodes.forEach((n, i) => { if (!pos[n.id]) pos[n.id] = { x: 80 + (i % 6) * 260, y: 80 + Math.floor(i / 6) * 160 }; });
+    }
+    render();
+    resetView();
   } catch (e) { toast("JSON 파싱 에러: " + e.message, "error"); }
 }
 
@@ -7954,8 +8038,10 @@ function startFrameTitleEdit(e, id) {
 function startFrameDrag(e, id) {
   e.stopPropagation();
   const p = pos[id] || { x: 0, y: 0 };
-  // T-T: frame 이동 시 그룹 이동을 위해 자식들의 시작 위치 캐시
-  const childIds = collectFrameDescendants(id);
+  // T-T: frame 이동 시 그룹 이동을 위해 자식들의 시작 위치 캐시.
+  // bug 10: '프레임 박스 안에 실제로 들어있는' 노드만 함께 이동(parent 엣지와 무관, 순수 기하).
+  // 프레임 밖에 떨어진 노드는 끌려오지 않고 엣지가 늘어난다.
+  const childIds = nodesInsideFrame(id);
   const childBase = {};
   for (const cid of childIds) if (pos[cid]) childBase[cid] = { x: pos[cid].x, y: pos[cid].y };
   _frameDrag = { id, mode: "move", startX: e.clientX, startY: e.clientY, baseX: p.x, baseY: p.y, childIds, childBase };
@@ -8065,55 +8151,38 @@ function isAncestor(ancestorId, descId) {
   return false;
 }
 
+// 컨테인먼트는 이제 '기하학적'으로만 다룬다 — 노드의 parent 엣지를 프레임으로 재지정하지 않는다.
+// (이전엔 재지정 때문에 컨테이너에 들어간 카드가 원래 부모/다른 카드와 잇던 연결선이 사라졌다.)
+// 프레임 박스 안에 있는지 여부는 nodesInsideFrame() 으로 그때그때 계산해 그룹 이동·복사에 쓴다.
 function applyFrameContainment(frameId) {
+  // no-op: 연결선 보존을 위해 parent 엣지를 건드리지 않음. (geometric containment)
+}
+
+/** 프레임 박스 안에 중심이 들어있는 노드 id 목록 (parent 엣지와 무관, 순수 기하). */
+function nodesInsideFrame(frameId) {
   const frame = BP.nodes.find(n => n.id === frameId);
-  if (!frame || frame.role !== "section") return;
+  if (!frame || frame.role !== "section") return [];
   const fp = pos[frameId];
-  if (!fp) return;
+  if (!fp) return [];
   const fw = frame.attrs?.frame?.width || 520;
   const fh = frame.attrs?.frame?.height || 360;
   const x1 = fp.x, y1 = fp.y, x2 = fp.x + fw, y2 = fp.y + fh;
-
+  const out = [];
   for (const n of BP.nodes) {
-    if (n.id === frameId) continue;
-    if (n.id === "n_root") continue;
-    // section 도 다른 frame 안에 들어갈 수 있게 허용 (T-P: nesting)
-    // 단 자기 자신이 frameId 의 ancestor 인 경우 순환이라 skip
-    if (n.role === "section" && isAncestor(n.id, frameId)) continue;
+    if (n.id === frameId || n.id === "n_root") continue;
+    if (n.role === "section" && isAncestor(n.id, frameId)) continue; // 순환 방지
     const p = pos[n.id];
     if (!p) continue;
-    // 노드 중심점 계산 — section 은 자신의 frame 박스 중심, 일반 노드는 카드 중심
     let cx, cy;
     if (n.role === "section") {
-      const nw = n.attrs?.frame?.width || 520;
-      const nh = n.attrs?.frame?.height || 360;
-      cx = p.x + nw / 2;
-      cy = p.y + nh / 2;
+      const nw = n.attrs?.frame?.width || 520, nh = n.attrs?.frame?.height || 360;
+      cx = p.x + nw / 2; cy = p.y + nh / 2;
     } else {
-      const c = centerOf(n.id);
-      cx = c.x; cy = c.y;
+      const c = centerOf(n.id); cx = c.x; cy = c.y;
     }
-    const inside = cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
-    const existing = BP.edges.find(e => e.from === n.id && e.type === "parent");
-    if (inside) {
-      // 가장 깊은(가장 작은) frame 우선 — 다른 frame 안에 더 작은 frame 이 있을 수 있음.
-      // 현재 frame 보다 더 깊이 nested 된 frame 을 이미 parent 로 갖고 있으면 변경하지 않음.
-      if (existing && existing.to !== frameId) {
-        const cur = BP.nodes.find(x => x.id === existing.to);
-        if (cur && cur.role === "section") {
-          const curW = cur.attrs?.frame?.width || 520;
-          const curH = cur.attrs?.frame?.height || 360;
-          // 현재 parent frame 이 더 작으면(더 깊이 nested) 그대로 유지
-          if (curW * curH < fw * fh) continue;
-        }
-      }
-      if (!existing) BP.edges.push({ from: n.id, to: frameId, type: "parent" });
-      else if (existing.to !== frameId) existing.to = frameId;
-    } else if (existing && existing.to === frameId) {
-      // frame 밖으로 나갔으면 root 로 복구
-      existing.to = "n_root";
-    }
+    if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) out.push(n.id);
   }
+  return out;
 }
 
 function spawnStencilNode(role, label, x, y, hint) {
@@ -8441,7 +8510,7 @@ function loadTemplate(key) {
   saveState("template");
   BP = make();
   document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
-  autoLayout(); render();
+  autoLayout(); render(); resetView(); // 시작 직후 뷰 영점 복원 (bug 3)
   toast(`템플릿 적용: ${key}`, "ok");
 }
 
@@ -8469,7 +8538,7 @@ function startBlankBlueprint() {
     edges: [],
   };
   document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
-  autoLayout(); render();
+  autoLayout(); render(); resetView(); // 시작 직후 뷰 영점 복원 (bug 3)
   selectNode("n_root");
   toast("공백으로 시작", "ok");
 }
@@ -8952,16 +9021,29 @@ function saveUiState() {
 }
 function applyMinimapPosition() {
   const mm = document.getElementById("minimap");
-  if (!mm) return;
-  const pos = _uiState.minimapPosition;
-  // 기본 상수 reset
-  mm.style.top = "auto"; mm.style.bottom = "auto"; mm.style.left = "auto"; mm.style.right = "auto";
-  mm.style.display = pos === "hidden" ? "none" : "";
-  const PAD = 24, PANEL = (UI.panelWidth || 320) + 20;
-  if (pos === "bottom-right")  { mm.style.bottom = PAD + "px"; mm.style.right = PANEL + "px"; }
-  else if (pos === "bottom-left") { mm.style.bottom = PAD + "px"; mm.style.left  = PANEL + "px"; }
-  else if (pos === "top-right")   { mm.style.top    = (PAD + 49) + "px"; mm.style.right = PANEL + "px"; }
-  else if (pos === "top-left")    { mm.style.top    = (PAD + 49) + "px"; mm.style.left  = PANEL + "px"; }
+  const cc = document.getElementById("canvas-controls");
+  const mmPos = _uiState.minimapPosition || "bottom-right";
+  // 둘 다 canvas-container 안에 있으므로 캔버스 영역 모서리 기준 패딩만 적용 (패널 폭/창 크기 보정 불필요) (bug 16/17)
+  const PAD = 24, GAP = 8, MM_H = 120;
+  const hidden = mmPos === "hidden";
+  if (mm) {
+    mm.style.top = mm.style.bottom = mm.style.left = mm.style.right = "auto";
+    mm.style.display = hidden ? "none" : "";
+    if (!hidden) {
+      if (mmPos === "bottom-right")  { mm.style.bottom = PAD + "px"; mm.style.right = PAD + "px"; }
+      else if (mmPos === "bottom-left") { mm.style.bottom = PAD + "px"; mm.style.left  = PAD + "px"; }
+      else if (mmPos === "top-right")   { mm.style.top    = PAD + "px"; mm.style.right = PAD + "px"; }
+      else if (mmPos === "top-left")    { mm.style.top    = PAD + "px"; mm.style.left  = PAD + "px"; }
+    }
+  }
+  // 네비게이션(줌) 바를 미니맵과 한 묶음으로 — 같은 모서리에서 미니맵 바깥쪽(위/아래)에 도킹 (bug 16: "미니맵과 엮어")
+  if (cc) {
+    cc.style.top = cc.style.bottom = cc.style.left = cc.style.right = "auto";
+    const corner = hidden ? "bottom-right" : mmPos;           // 숨김이면 컨트롤만 우하단 모서리
+    const off = hidden ? PAD : PAD + MM_H + GAP;              // 미니맵이 보이면 그 높이만큼 띄워 붙임
+    if (corner.startsWith("top")) cc.style.top = off + "px"; else cc.style.bottom = off + "px";
+    if (corner.endsWith("right")) cc.style.right = PAD + "px"; else cc.style.left = PAD + "px";
+  }
 }
 
 function defaultUI() {
@@ -9416,6 +9498,7 @@ buildStencilPanel();
 if (Object.keys(pos).length === 0) autoLayout();
 normalizeAllPositions(); // 음수 좌표 양수로 shift
 render();
+syncArrowToggleBtn(); // 영속된 화살표 표시 상태 버튼에 반영
 resetView();
 document.getElementById("rev-pill").textContent = `rev ${BP.meta.rev}`;
 updateStoreBadge();
