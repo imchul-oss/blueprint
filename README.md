@@ -67,7 +67,7 @@ Edges:  parent · depends-on · supports · realizes · flows-to ·
         renders-on · traces-to
 ```
 
-Edges carry a **type colour + optional free label**, and **direction arrows** can be toggled on from the canvas controls. 엣지는 타입 색상 + 자유 라벨을 가지며, 캔버스 컨트롤에서 **방향 화살표** 표시를 켤 수 있다.
+Edges carry a **type colour + optional free label**, and **direction arrows** can be toggled from the top toolbar (next to "add node"); arrowhead shape & size are configurable in UI settings. 엣지는 타입 색상 + 자유 라벨을 가지며, 상단 바("노드 추가" 옆)에서 **방향 화살표**를 켜고, 화살촉 모양·크기는 UI 설정에서 조절한다.
 
 ### Frames & groups · 프레임·그룹
 
@@ -345,7 +345,7 @@ Left-side AI panel takes natural-language commands:
 | Right-click multi-selection | Group into frame · 그룹으로 묶기 |
 | Node 4-way `+` | ↑ parent / ↓ child / → next depends / ← supporting evidence |
 
-**Canvas controls** (bottom-right, docked above the minimap as one widget): zoom −/+, zoom %, fit-to-view, and a **direction-arrow toggle** for edges. The minimap corner is configurable in settings; the control bar follows it. 캔버스 컨트롤(우하단, 미니맵과 한 묶음): 줌 −/+, 배율, 화면맞춤, 엣지 **방향 화살표 토글**. 미니맵 위치는 설정에서 바꿀 수 있고 컨트롤 바가 따라간다.
+**Canvas controls** (bottom-right, docked above the minimap as one widget): zoom −/+, zoom %, fit-to-view. The minimap corner is configurable in settings; the control bar follows it. The edge **direction-arrow toggle** lives in the top toolbar (next to "add node"). 캔버스 컨트롤(우하단, 미니맵과 한 묶음): 줌 −/+, 배율, 화면맞춤. 미니맵 위치는 설정에서 바꿀 수 있고 컨트롤 바가 따라간다. 엣지 **방향 화살표 토글**은 상단 바에 있다.
 
 ---
 

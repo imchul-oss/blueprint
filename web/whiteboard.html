@@ -437,7 +437,8 @@
     background: transparent; border: none; cursor: pointer; color: var(--muted);
   }
   .ctrl-btn:hover { color: var(--ink); background: var(--line); }
-  .ctrl-btn.active { color: var(--accent-fg); background: var(--accent); }
+  /* 토글 ON 상태 (방향 화살표 등) — 헤더 icon 버튼 */
+  .icon.active { color: var(--accent); background: var(--accent-glow); }
   #zoom-level {
     display: inline-flex; align-items: center; padding: 0 2px;
     font-size: 11px; color: var(--muted); font-weight: 600; min-width: 34px; justify-content: center;
@@ -769,11 +770,9 @@
     transition-delay: 400ms;
   }
   /* 헤더 버튼은 우측에 몰려 있어 중앙 정렬 시 화면 밖으로 잘림 → 버튼 오른쪽 모서리 기준으로 왼쪽으로 펼침 */
-  /* 헤더 버튼이 2열로 줄바꿈돼도 툴팁이 아래쪽 버튼을 덮지 않도록 버튼 '위'로 띄운다 (bug 19) */
+  /* 헤더는 화면 최상단이라 툴팁은 버튼 아래로 펼친다 (위로 띄우면 화면 밖으로 잘려 안 보임). 우측 정렬로 화면 밖 가림 방지. */
   .actions-row [data-tooltip]::before {
-    left: auto; right: 0;
-    top: auto; bottom: calc(100% + 6px);
-    transform: translateY(2px);
+    left: auto; right: 0; transform: translateY(-2px);
   }
   .actions-row [data-tooltip]:hover::before {
     transform: translateY(0);
@@ -1384,6 +1383,9 @@
     <button class="icon" onclick="addNode()" data-tooltip="노드 추가&#10;root 아래에 새 feature 노드 생성" aria-label="노드 추가">
       <svg class="ic"><use href="#i-plus"/></svg>
     </button>
+    <button class="icon" id="arrow-toggle" onclick="toggleArrows()" data-tooltip="방향 화살표&#10;엣지 방향 화살표 표시/숨김" aria-label="방향 화살표">
+      <svg class="ic"><use href="#i-arrow"/></svg>
+    </button>
     <button class="icon" onclick="openLayoutMenu(this)" data-tooltip="자동 정렬&#10;노드를 자동 배치 — 클릭 시 모드 선택" aria-label="자동 정렬">
       <svg class="ic"><use href="#i-layout"/></svg>
     </button>
@@ -1428,7 +1430,7 @@
     <button class="icon" onclick="openGeneralSettings()" data-tooltip="일반 설정&#10;저장 · AI · 캔버스 (⌘.)" aria-label="일반 설정">
       <svg class="ic"><use href="#i-plug"/></svg>
     </button>
-    <button class="icon" onclick="openSettings()" data-tooltip="UI · 디자인 설정&#10;디자인 토큰 — 즉시 적용 (⌘,)" aria-label="UI 설정">
+    <button class="icon" onclick="openSettings()" data-tooltip="UI · 디자인 설정 (⌘,)" aria-label="UI 설정">
       <svg class="ic"><use href="#i-sliders"/></svg>
     </button>
     <button class="icon" onclick="toggleTheme()" data-tooltip="테마 전환&#10;라이트 ↔ 다크 (⌘⇧L)" aria-label="테마 전환">
@@ -1573,9 +1575,6 @@
       </button>
       <button class="ctrl-btn" onclick="resetView()" aria-label="원위치" title="원위치 (⌘0)">
         <svg class="ic"><use href="#i-fit"/></svg>
-      </button>
-      <button class="ctrl-btn" id="arrow-toggle" onclick="toggleArrows()" aria-label="방향 화살표" title="엣지 방향 화살표 표시/숨김">
-        <svg class="ic"><use href="#i-arrow"/></svg>
       </button>
     </div>
     <div id="minimap" aria-hidden="true" onclick="onMinimapClick(event)" style="cursor:crosshair">
@@ -1786,7 +1785,7 @@
 
 <dialog id="settings-modal" aria-label="UI · 디자인 설정">
   <h3 style="display:flex;justify-content:space-between;align-items:center;">
-    UI · 디자인 설정 <span style="font-size:11px;color:var(--muted);font-weight:400;">디자인 토큰 — 즉시 적용 / localStorage</span>
+    UI · 디자인 설정
   </h3>
   <div class="presets-row">
     <button class="preset" onclick="applyPreset('default')">기본</button>
@@ -5061,8 +5060,9 @@ function toggleArrows() {
   toast(showArrows ? "엣지 방향 화살표 표시" : "엣지 방향 화살표 숨김", "ok");
 }
 function syncArrowToggleBtn() {
+  // 색상 반전: 화살표 OFF일 때 버튼이 채워지고(accent), ON일 때 비워진다.
   const b = document.getElementById("arrow-toggle");
-  if (b) b.classList.toggle("active", showArrows);
+  if (b) b.classList.toggle("active", !showArrows);
 }
 
 function drawEdges() {
@@ -5071,8 +5071,22 @@ function drawEdges() {
   for (const n of BP.nodes) {
     centers[n.id] = centerOf(n.id);
   }
-  // 방향 화살표 마커 (bug 1) — context-stroke 로 엣지 색과 자동 일치. showArrows 켰을 때만 marker-end 부착.
-  const defs = `<defs><marker id="edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke" stroke="none"/></marker></defs>`;
+  // 방향 화살표 마커 (bug 1) — 타입별로 EDGE_STYLE 색을 입힌 마커를 만든다.
+  // (context-stroke 는 프레젠테이션 속성으로 지원이 불안정해 화살표가 안 보였음 → 구체 색으로 교체.
+  //  var(--accent) 같은 CSS 변수는 presentation attr 로는 안 먹으므로 style:fill 로 지정.)
+  // 크기·모양은 UI 설정(arrowSize / arrowShape)으로 조절.
+  const aSize = Math.max(4, Number(UI && UI.arrowSize) || 12);
+  const aShape = (UI && UI.arrowShape) || "triangle";
+  const arrowMark = (fill) => {
+    if (aShape === "open")    return `<path d="M1,1 L9,5 L1,9" style="fill:none;stroke:${fill};stroke-width:2;stroke-linecap:round;stroke-linejoin:round"/>`;
+    if (aShape === "diamond") return `<path d="M5,0 L10,5 L5,10 L0,5 z" style="fill:${fill}" stroke="none"/>`;
+    if (aShape === "circle")  return `<circle cx="5" cy="5" r="4" style="fill:${fill}" stroke="none"/>`;
+    return `<path d="M0,0 L10,5 L0,10 z" style="fill:${fill}" stroke="none"/>`; // triangle
+  };
+  const aRefX = aShape === "circle" ? 5 : 9;
+  const defs = `<defs>${Object.entries(EDGE_STYLE).map(([t, s]) =>
+    `<marker id="arrow-${t}" viewBox="0 0 10 10" refX="${aRefX}" refY="5" markerUnits="userSpaceOnUse" markerWidth="${aSize}" markerHeight="${aSize}" orient="auto-start-reverse">${arrowMark(s.color)}</marker>`
+  ).join("")}</defs>`;
   // 스타일은 EDGE_STYLE 단일 원천 (팝업 스와치와 동일). 끝점은 중앙이 아닌 변 중앙 앵커 + 베지어.
   svg.innerHTML = defs + BP.edges.map((e, ei) => {
     const ca = centers[e.from], cb = centers[e.to];
@@ -5101,7 +5115,7 @@ function drawEdges() {
     // Wide invisible hit-area first, then visible stroke. 14px hit zone makes edges clickable.
     const hit = `<path d="${d}" fill="none" stroke="transparent" stroke-width="14" class="hit" data-edge-key="${edgeKey}" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
     const selClass = isSel ? ' class="edge-selected"' : '';
-    const arrow = showArrows ? ` marker-end="url(#edge-arrow)"` : "";
+    const arrow = (showArrows && EDGE_STYLE[e.type]) ? ` marker-end="url(#arrow-${e.type})"` : "";
     const line = hit + `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${sw}" stroke-linecap="${s.cap || "butt"}" ${s.dash} data-edge-idx="${ei}" data-edge-key="${edgeKey}"${selClass}${arrow} style="pointer-events:stroke;cursor:pointer;" onclick="selectEdge('${edgeKey}', ${ei}, event)" />`;
     // edge label (정책 그래프 등) — 베지어 중점 위
     if (e.label) {
@@ -5288,6 +5302,18 @@ function onEdgeClick(edgeIdx, ev) {
   setTimeout(() => { if (document.body.contains(pop)) pop.remove(); }, 20000);
 }
 
+function reverseEdge(edgeIdx) {
+  if (!Number.isFinite(edgeIdx) || !BP.edges[edgeIdx]) return;
+  saveState("edge-reverse");
+  const e = BP.edges[edgeIdx];
+  const tmp = e.from; e.from = e.to; e.to = tmp;
+  bumpRev();
+  audit("propose", { intent: `edge reverse ${e.to}<->${e.from} (${e.type})`, actor: "user" });
+  render();
+  if (selId) renderRelations();
+  toast("엣지 방향 뒤집음", "ok");
+}
+
 function deleteEdgeByIndex(edgeIdx) {
   if (!Number.isFinite(edgeIdx) || !BP.edges[edgeIdx]) return;
   const e = BP.edges[edgeIdx];
@@ -5305,30 +5331,36 @@ function deleteEdgeByIndex(edgeIdx) {
 function renderRelations() {
   if (!selId) return;
   const titleOf = id => BP.nodes.find(n=>n.id===id)?.title || id;
-  const linkOf = id => `<a href="#" onclick="event.preventDefault();selectNode('${jsStr(id)}')">${esc(titleOf(id))}</a> <span style="color:var(--muted);font-size:10px">#${esc(id)}</span>`;
+  const linkOf = id => `<a href="#" onclick="event.preventDefault();selectNode('${jsStr(id)}')" title="${esc(id)}">${esc(titleOf(id))}</a>`;
   // 실제 BP.edges 인덱스를 함께 보존한다. 이전엔 `from|to|type` 맵으로 인덱스를 역산해
   // 중복 엣지가 충돌(같은 키 → 마지막 인덱스만 남음)하여 엉뚱한 엣지가 삭제되거나 삭제가 안 됐다. (bug 2)
   const indexed = BP.edges.map((e, i) => ({ e, i }));
-  const parents = indexed.filter(({ e }) => e.from === selId);
-  const children = indexed.filter(({ e }) => e.to === selId && e.type === "parent").map(({ e }) => e.from);
-  const deps = indexed.filter(({ e }) => (e.from === selId || e.to === selId) && e.type !== "parent");
-  document.getElementById("rel-parents").innerHTML = parents.length ? parents.map(({ e }) => `<div>${esc(e.type)} → ${linkOf(e.to)}</div>`).join("") : `<span style="color:var(--muted)">없음</span>`;
-  document.getElementById("rel-children").innerHTML = children.length ? children.map(linkOf).join("<br>") : `<span style="color:var(--muted)">없음</span>`;
-  document.getElementById("rel-deps").innerHTML = deps.length ? deps.map(({ e, i }) => {
+  // 모든 섹션(상위·하위·의존)이 동일한 편집 행 UI 를 쓴다 — 타입 변경 · 방향 뒤집기(⇄) · 라벨 · 삭제.
+  // selId 기준 방향(이 카드 → / ←)으로 표기해 일관된 UX. (이전엔 의존만 편집 가능했음)
+  const TYPES = ["parent","depends-on","supports","realizes","flows-to","renders-on","traces-to"];
+  const relRow = ({ e, i }) => {
+    const outgoing = e.from === selId;          // 이 카드가 출발점?
+    const other = outgoing ? e.to : e.from;
+    const arrow = outgoing ? "→" : "←";
     const typeSel = `<select onchange="setEdgeType(${i}, this.value)" style="font-size:11px;padding:1px 4px;width:auto;">
-      ${["depends-on","supports","realizes","flows-to","renders-on","traces-to","parent"].map(t => `<option value="${t}" ${t===e.type?"selected":""}>${t}</option>`).join("")}
-    </select>`;
-    const labelInput = `<input value="${esc(e.label || "")}" placeholder="label" style="font-size:11px;padding:2px 6px;width:90px;" onchange="setEdgeLabel(${i}, this.value)">`;
+      ${TYPES.map(t => `<option value="${t}" ${t===e.type?"selected":""}>${t}</option>`).join("")}</select>`;
+    const revBtn = `<button onclick="reverseEdge(${i})" title="방향 뒤집기" style="font-size:11px;padding:2px 6px;background:transparent;border:1px solid var(--panel-border);border-radius:4px;cursor:pointer;color:var(--ink-2)">⇄</button>`;
+    const labelInput = `<input value="${esc(e.label || "")}" placeholder="label" style="font-size:11px;padding:2px 6px;width:64px;" onchange="setEdgeLabel(${i}, this.value)">`;
     const delBtn = `<button onclick="deleteEdgeByIndex(${i})" class="danger" style="font-size:10px;padding:2px 6px;" title="이 엣지 삭제">✕</button>`;
-    // 고유 ID 대신 카드명 병기 (bug 6) — 제목 변경도 그때그때 반영됨
-    return `<div style="margin:4px 0;padding:4px;border:1px solid var(--panel-border);border-radius:4px;display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:12px;">
-      <span style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${linkOf(e.from)}</span> →
-      ${typeSel}
-      → <span style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${linkOf(e.to)}</span>
-      ${labelInput}
-      ${delBtn}
+    return `<div style="margin:4px 0;padding:4px 6px;border:1px solid var(--panel-border);border-radius:6px;display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:12px;">
+      <span style="color:var(--muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(titleOf(selId))}">${esc(titleOf(selId))} ${arrow}</span>
+      <span style="flex:1;min-width:72px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${linkOf(other)}</span>
+      ${typeSel} ${revBtn} ${labelInput} ${delBtn}
     </div>`;
-  }).join("") : `<span style="color:var(--muted)">없음 — 엣지 만들기: 노드 가장자리 점을 다른 노드로 드래그</span>`;
+  };
+  const sec = (rows, empty) => rows.length ? rows.map(relRow).join("") : `<span style="color:var(--muted)">${empty}</span>`;
+  // 정의 명확화: 상위=나가는 parent / 하위=들어오는 parent / 의존=parent 아닌 모든 연결 (중복 제거)
+  const parents  = indexed.filter(({ e }) => e.from === selId && e.type === "parent");
+  const children = indexed.filter(({ e }) => e.to === selId && e.type === "parent");
+  const deps     = indexed.filter(({ e }) => e.type !== "parent" && (e.from === selId || e.to === selId));
+  document.getElementById("rel-parents").innerHTML  = sec(parents,  "없음");
+  document.getElementById("rel-children").innerHTML = sec(children, "없음");
+  document.getElementById("rel-deps").innerHTML     = sec(deps, "없음 — 엣지 만들기: 노드 가장자리 점을 다른 노드로 드래그");
   const affected = getBlastRadius(selId);
   const level = affected.length === 0 ? "국소" : affected.length <= 3 ? "중간" : "광범위";
   // bug 9: '임의로 뜨는' 게 아니라 의미 방향을 따라 3홉 이내로 연결된 카드라는 규칙을 명시.
@@ -8860,6 +8892,13 @@ const UI_SCHEMA = {
     { key: "portSize",       label: "포트 크기",        type: "range", min: 6,   max: 24,  step: 1,    def: 12 },
     { key: "ghostArrowSize", label: "Ghost arrow 크기", type: "range", min: 12,  max: 36,  step: 1,    def: 16 },
     { key: "conflictBadge",  label: "충돌 배지 크기",   type: "range", min: 14,  max: 32,  step: 1,    def: 22 },
+    { key: "arrowSize",      label: "엣지 화살촉 크기", type: "range", min: 6,   max: 28,  step: 1,    def: 12 },
+    { key: "arrowShape",     label: "엣지 화살촉 모양", type: "select", def: "triangle", options: [
+      { value: "triangle", label: "삼각형 (채움)" },
+      { value: "open",     label: "열린 화살표 (›)" },
+      { value: "diamond",  label: "다이아몬드" },
+      { value: "circle",   label: "원형 점" },
+    ] },
   ],
   space: [
     { key: "gridUnit",       label: "그리드 단위(px)",  type: "range", min: 4,  max: 16, step: 1, def: 8 },
