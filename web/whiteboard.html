@@ -420,12 +420,14 @@
 
   /* Floating canvas controls */
   #canvas-controls {
-    position: absolute; bottom: var(--s-6); left: var(--s-6);
+    position: absolute; bottom: var(--s-6); right: var(--s-6);
+    width: 180px; box-sizing: border-box;        /* 미니맵과 폭 통일 */
     background: var(--panel-bg);
     border: 1px solid var(--panel-border);
     border-radius: var(--r-md);
-    padding: 4px;
-    display: flex; gap: 4px; z-index: 50;
+    padding: 4px 6px;
+    display: flex; gap: 2px; z-index: 50;
+    align-items: center; justify-content: space-between;  /* 한 폭 안에 고르게 분포 */
     backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
     box-shadow: var(--shadow-2);
   }
@@ -437,8 +439,8 @@
   .ctrl-btn:hover { color: var(--ink); background: var(--line); }
   .ctrl-btn.active { color: var(--accent-fg); background: var(--accent); }
   #zoom-level {
-    display: inline-flex; align-items: center; padding: 0 var(--s-2);
-    font-size: 11px; color: var(--muted); font-weight: 600; min-width: 44px; justify-content: center;
+    display: inline-flex; align-items: center; padding: 0 2px;
+    font-size: 11px; color: var(--muted); font-weight: 600; min-width: 34px; justify-content: center;
   }
 
   /* Mini-map */
@@ -4631,6 +4633,32 @@ function bezierMid(a, c1, c2, b) {
 // =================== LAYOUT (layered DAG, parent edges) ===================
 function autoLayout(animate, mode) {
   mode = mode || (typeof _layoutMode !== "undefined" ? _layoutMode : "tree");
+
+  // === 그룹(프레임) 보존 (bug 18) ===
+  // 프레임 박스 안 노드들의 '프레임 기준 상대 위치'를 기록해두고, 레이아웃 대상에서 제외한다.
+  // 레이아웃이 끝나면 프레임의 새 위치에 맞춰 상대 위치로 복원한다 → 그룹 내부 배치가 유지되고
+  // 그룹 전체가 한 덩어리로 이동한다. (그룹이 없으면 excluded 가 비어 기존 동작과 동일)
+  const frameNodes = BP.nodes.filter(n => n.role === "section" && pos[n.id]);
+  const frameArea = f => (f.attrs?.frame?.width || 520) * (f.attrs?.frame?.height || 360);
+  const innermostFrameOf = new Map(); // memberId -> frameId (가장 작은=안쪽 프레임)
+  for (const f of frameNodes) {
+    for (const mid of nodesInsideFrame(f.id)) {
+      const prev = innermostFrameOf.get(mid);
+      if (!prev) innermostFrameOf.set(mid, f.id);
+      else {
+        const pf = BP.nodes.find(x => x.id === prev);
+        if (pf && frameArea(f) < frameArea(pf)) innermostFrameOf.set(mid, f.id);
+      }
+    }
+  }
+  const memberOffset = new Map(); // memberId -> {fid, dx, dy}
+  for (const [mid, fid] of innermostFrameOf) {
+    const mp = pos[mid], fp = pos[fid];
+    if (mp && fp) memberOffset.set(mid, { fid, dx: mp.x - fp.x, dy: mp.y - fp.y });
+  }
+  const excluded = new Set(memberOffset.keys());
+  const layoutNodes = BP.nodes.filter(n => !excluded.has(n.id)); // 멤버 제외한 배치 대상
+
   // BFS by parent edges from root → layers (공통)
   const parentOf = new Map();
   for (const e of BP.edges) if (e.type === "parent") parentOf.set(e.from, e.to);
@@ -4638,15 +4666,15 @@ function autoLayout(animate, mode) {
   let changed = true;
   while (changed) {
     changed = false;
-    for (const n of BP.nodes) {
+    for (const n of layoutNodes) {
       if (layer.has(n.id)) continue;
       const p = parentOf.get(n.id);
       if (p != null && layer.has(p)) { layer.set(n.id, layer.get(p) + 1); changed = true; }
     }
   }
-  for (const n of BP.nodes) if (!layer.has(n.id)) layer.set(n.id, 0);
+  for (const n of layoutNodes) if (!layer.has(n.id)) layer.set(n.id, 0);
   const byLayer = new Map();
-  for (const n of BP.nodes) {
+  for (const n of layoutNodes) {
     const L = layer.get(n.id);
     if (!byLayer.has(L)) byLayer.set(L, []);
     byLayer.get(L).push(n);
@@ -4677,9 +4705,9 @@ function autoLayout(animate, mode) {
       });
     }
   } else if (mode === "grid") {
-    // role 무시, BP.nodes 순서대로 격자
-    const COLS = Math.ceil(Math.sqrt(BP.nodes.length));
-    BP.nodes.forEach((n, i) => {
+    // role 무시, 순서대로 격자 (그룹 멤버 제외)
+    const COLS = Math.ceil(Math.sqrt(layoutNodes.length));
+    layoutNodes.forEach((n, i) => {
       pos[n.id] = { x: MARGIN + (i % COLS) * colW, y: MARGIN + Math.floor(i / COLS) * rowH };
     });
   } else if (mode === "radial") {
@@ -4696,14 +4724,14 @@ function autoLayout(animate, mode) {
         pos[n.id] = { x: cx + Math.cos(ang) * radius, y: cy + Math.sin(ang) * radius };
       });
     }
-    // radial 결과 음수 좌표 정리 — normalize
-    const xs = BP.nodes.map(n => pos[n.id]?.x ?? 0);
-    const ys = BP.nodes.map(n => pos[n.id]?.y ?? 0);
+    // radial 결과 음수 좌표 정리 — normalize (멤버 제외, 멤버는 뒤에서 프레임 기준 복원)
+    const xs = layoutNodes.map(n => pos[n.id]?.x ?? 0);
+    const ys = layoutNodes.map(n => pos[n.id]?.y ?? 0);
     const minX = Math.min(...xs), minY = Math.min(...ys);
     if (minX < MARGIN || minY < MARGIN) {
       const shiftX = MARGIN - Math.min(minX, MARGIN);
       const shiftY = MARGIN - Math.min(minY, MARGIN);
-      for (const n of BP.nodes) pos[n.id] = { x: pos[n.id].x + shiftX, y: pos[n.id].y + shiftY };
+      for (const n of layoutNodes) pos[n.id] = { x: pos[n.id].x + shiftX, y: pos[n.id].y + shiftY };
     }
   } else if (mode === "compact") {
     // 자식 형제 packed (가로 layer, 자식들이 부모 아래 모임)
@@ -4715,7 +4743,7 @@ function autoLayout(animate, mode) {
     const placed = new Set();
     let nextY = MARGIN;
     function walk(id, depth) {
-      if (placed.has(id)) return;
+      if (placed.has(id) || excluded.has(id)) return; // 그룹 멤버는 뒤에서 프레임 기준 복원
       placed.add(id);
       pos[id] = { x: MARGIN + depth * colW, y: nextY };
       nextY += rowH;
@@ -4724,7 +4752,19 @@ function autoLayout(animate, mode) {
     }
     walk("n_root", 0);
     // 고아 노드
-    for (const n of BP.nodes) if (!placed.has(n.id)) walk(n.id, 0);
+    for (const n of layoutNodes) if (!placed.has(n.id)) walk(n.id, 0);
+  }
+
+  // === 그룹 복원: 프레임을 바깥→안 순서로 처리해 멤버를 프레임 기준 상대 위치로 복원 (bug 18) ===
+  if (memberOffset.size) {
+    const orderedFrames = frameNodes.slice().sort((a, b) => frameArea(b) - frameArea(a)); // 큰(바깥) 것 먼저
+    for (const f of orderedFrames) {
+      const fp = pos[f.id]; if (!fp) continue;
+      for (const [mid, off] of memberOffset) {
+        if (off.fid !== f.id) continue;
+        pos[mid] = { x: fp.x + off.dx, y: fp.y + off.dy };
+      }
+    }
   }
 }
 

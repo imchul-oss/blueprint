@@ -67,6 +67,14 @@ Edges:  parent · depends-on · supports · realizes · flows-to ·
         renders-on · traces-to
 ```
 
+Edges carry a **type colour + optional free label**, and **direction arrows** can be toggled on from the canvas controls. 엣지는 타입 색상 + 자유 라벨을 가지며, 캔버스 컨트롤에서 **방향 화살표** 표시를 켤 수 있다.
+
+### Frames & groups · 프레임·그룹
+
+A `section` node renders as a **frame** — a visual container. Containment is **geometric**: a card belongs to a frame purely by sitting inside its box, so dropping a card into a frame **never rewires or hides its existing connections**. Dragging a frame moves the cards inside it as a group; duplicating a frame copies its contents at the same size; auto-layout keeps each group's internal arrangement intact and moves it as one block.
+
+`section` 노드는 **프레임**(시각적 컨테이너)으로 렌더된다. 포함은 **기하학적** — 카드가 박스 안에 있으면 그 프레임 소속이며, 프레임에 넣어도 **기존 연결선이 재배선·숨김되지 않는다**. 프레임을 드래그하면 안의 카드가 함께 이동하고, 복제하면 내용까지 동일 크기로 복사되며, 자동 정렬은 그룹 내부 배치를 유지한 채 한 덩어리로 옮긴다.
+
 ---
 
 ## Hallucination control · 환각 통제 4축
@@ -336,6 +344,8 @@ Left-side AI panel takes natural-language commands:
 | Right-click node | Context menu (delete · duplicate · center · inspector · new node) · 우클릭 메뉴 |
 | Right-click multi-selection | Group into frame · 그룹으로 묶기 |
 | Node 4-way `+` | ↑ parent / ↓ child / → next depends / ← supporting evidence |
+
+**Canvas controls** (bottom-right, docked above the minimap as one widget): zoom −/+, zoom %, fit-to-view, and a **direction-arrow toggle** for edges. The minimap corner is configurable in settings; the control bar follows it. 캔버스 컨트롤(우하단, 미니맵과 한 묶음): 줌 −/+, 배율, 화면맞춤, 엣지 **방향 화살표 토글**. 미니맵 위치는 설정에서 바꿀 수 있고 컨트롤 바가 따라간다.
 
 ---
 
